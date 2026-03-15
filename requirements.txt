@@ -1,0 +1,7 @@
+beartype==0.22.9
+equinox==0.13.4
+gymnasium==1.2.3
+jax[cuda13]==0.9.0.1
+matplotlib==3.10.8
+optax==0.2.7
+networkx=3.6.1

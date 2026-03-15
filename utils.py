@@ -1,0 +1,24 @@
+from collections.abc import Callable
+from functools import wraps
+from itertools import product
+from time import time
+from typing import TypeAlias
+
+from beartype import beartype as typechecker  # noqa: F401
+from jaxtyping import Array, Int
+
+DiceArray: TypeAlias = Int[Array, "5"]
+ScoreCardArray: TypeAlias = Int[Array, "13"]
+
+
+def timing(f: Callable) -> Callable:
+    @wraps(f)
+    def wrap(*args, **kw):
+        ts = time()
+        result = f(*args, **kw)
+        te = time()
+        print(f"func:{f.__name__!r} took: {(te - ts) * 1000:2.6f} sec")
+        return result
+
+    return wrap
+
