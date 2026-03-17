@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import jaxtyped
 
-from game import KniffelState, score_case
+from game import KniffelState, score_case, score_upper, score_full_house, score_three_of_a_kind, score_four_of_a_kind, score_small_straight, score_large_straight, score_faces, score_kniffel
 from utils import typechecker
 
 if TYPE_CHECKING:
@@ -191,11 +191,16 @@ def upper_bonus_gap(state: KniffelState) -> Float[Array, ""]:
 def best_score_available(state: KniffelState) -> Float[Array, ""]:
     """Normalised score of the best open category for the current dice.
     Returns 0.0 if all categories are filled."""
-    scores = jax.vmap(lambda cid: score_case(cid, state.dice))(jnp.arange(13))
+    dice = state.dice
+    raw = jnp.array([
+        score_upper(dice, 1), score_upper(dice, 2), score_upper(dice, 3),
+        score_upper(dice, 4), score_upper(dice, 5), score_upper(dice, 6),
+        score_full_house(dice), score_three_of_a_kind(dice), score_four_of_a_kind(dice),
+        score_small_straight(dice), score_large_straight(dice), score_faces(dice),
+        score_kniffel(dice),
+    ], dtype=jnp.float32)
     open_mask = state.scorecard < 0
-    normalised = scores.astype(jnp.float32) / _CATEGORY_MAX_SCORES
-    masked = jnp.where(open_mask, normalised, 0.0)
-    return jnp.max(masked)
+    return jnp.max(jnp.where(open_mask, raw / _CATEGORY_MAX_SCORES, 0.0))
 
 
 # ------------------------------------------------------------

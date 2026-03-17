@@ -2,6 +2,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray, Scalar, jaxtyped
 
 from mask_primitives import N_MASK_BOOL_OPS, N_MASK_PRIMITIVES
@@ -24,7 +25,7 @@ from utils import typechecker
 # useful compositions by mutating these fields just like it mutates node rules.
 
 N_REROLL_LEAVES = N_MASK_PRIMITIVES
-N_SCORE_LEAVES = N_STATE_PRIMITIVES
+N_SCORE_LEAVES = 13
 N_LEAVES = N_REROLL_LEAVES + N_SCORE_LEAVES
 
 
@@ -32,7 +33,8 @@ N_LEAVES = N_REROLL_LEAVES + N_SCORE_LEAVES
 class DAGGenome(eqx.Module):
     # Decision-node arrays  (length N)
     thresholds: Float[Array, " N"]
-    rules: Int[Array, " N"]
+    rules_left: Int[Array, " N"]
+    rules_right: Int[Array, " N"]
     binary_ops: Int[Array, " N"]
     left: Int[Array, " N"]
     right: Int[Array, " N"]
@@ -44,7 +46,7 @@ class DAGGenome(eqx.Module):
     leaf_score_cat: Int[Array, " L"]  # scoring category 0-12    (score only)
 
     def get_active_mask(self) -> Bool[Array, " N"]:
-        n_nodes = self.rules.shape[0]
+        n_nodes = self.rules_left.shape[0]
 
         def step(reachable, _):
             active_left = jnp.where(reachable & (self.left >= 0), self.left, n_nodes)
@@ -59,50 +61,6 @@ class DAGGenome(eqx.Module):
         mask, _ = jax.lax.scan(step, init, None, length=n_nodes)
         return mask
 
-    def get_subtree_leaf_flags(self) -> tuple[Bool[Array, " N"], Bool[Array, " N"]]:
-        n = self.rules.shape[0]
-
-        def is_leaf_score(child):
-            # child < 0 means leaf; leaf_id = -child - 1
-            leaf_id = -child - 1
-            is_leaf = child < 0
-            is_score = ~self.leaf_is_reroll[leaf_id]
-            return is_leaf & is_score
-
-        def is_leaf_reroll(child):
-            leaf_id = -child - 1
-            is_leaf = child < 0
-            is_reroll = self.leaf_is_reroll[leaf_id]
-            return is_leaf & is_reroll
-
-        def step(carry, i):
-            has_score, has_reroll = carry  # both shape (N,)
-            # reverse index so we process deepest nodes first
-            node = n - 1 - i
-
-            l, r = self.left[node], self.right[node]
-
-            def child_has_score(child):
-                from_leaf = is_leaf_score(child)
-                from_node = jnp.where(child >= 0, has_score[child], False)
-                return from_leaf | from_node
-
-            def child_has_reroll(child):
-                from_leaf = is_leaf_reroll(child)
-                from_node = jnp.where(child >= 0, has_reroll[child], False)
-                return from_leaf | from_node
-
-            node_has_score = child_has_score(l) | child_has_score(r)
-            node_has_reroll = child_has_reroll(l) | child_has_reroll(r)
-
-            has_score = has_score.at[node].set(node_has_score)
-            has_reroll = has_reroll.at[node].set(node_has_reroll)
-            return (has_score, has_reroll), None
-
-        init = (jnp.zeros(n, dtype=jnp.bool_), jnp.zeros(n, dtype=jnp.bool_))
-        (has_score, has_reroll), _ = jax.lax.scan(step, init, jnp.arange(n))
-        return has_score, has_reroll
-
     @property
     def active_node_count(self) -> Int[Scalar, ""]:
         return jnp.sum(self.get_active_mask())
@@ -115,6 +73,25 @@ class DAGGenome(eqx.Module):
 # ------------------------------------------------------------
 # Leaf table construction
 # ------------------------------------------------------------
+def max_depth_from_nodes(n_nodes: int) -> int:
+    # O(log N) expected, add generous margin for worst-case evolved chains
+    # Empirically safe for random + mutated DAGs; verify on your population
+    return int(np.ceil(np.log2(n_nodes)) * 6)
+
+
+def max_reachable_depth(genome: DAGGenome) -> int:
+    """CPU-side BFS/DFS — run once on a sample, not in the hot loop."""
+    n = genome.rules_left.shape[0]
+    left = np.array(genome.left)
+    right = np.array(genome.right)
+
+    depth = np.zeros(n, dtype=np.int32)
+    for i in range(n):
+        l, r = left[i], right[i]
+        ld = 0 if l < 0 else depth[l] + 1
+        rd = 0 if r < 0 else depth[r] + 1
+        depth[i] = max(ld, rd)
+    return int(depth[0])  # depth of root
 
 
 @jaxtyped(typechecker=typechecker)
@@ -146,13 +123,19 @@ def make_leaves() -> tuple[
 
 @jaxtyped(typechecker=typechecker)
 def random_dag_genome(key: PRNGKeyArray, n_nodes: int, n_rules: int) -> DAGGenome:
-    k1, k2, k3, k4 = jr.split(key, 4)
+    k1, k2, k3, k4, k5 = jr.split(key, 5)
 
+    rules_left = jr.randint(k1, (n_nodes,), 0, n_rules)
+    rules_right = jr.randint(k2, (n_nodes,), 0, n_rules)
     rules = jr.randint(k1, (n_nodes,), 0, n_rules)
-    thresholds = jr.uniform(k2, (n_nodes,), minval=0.0, maxval=1.0)
-    binary_ops = jr.randint(k3, (n_nodes,), 0, N_BINARY_OPS)
+    thresholds = jr.uniform(k3, (n_nodes,))
+    binary_ops = jr.randint(k4, (n_nodes,), 0, N_BINARY_OPS)
 
-    def random_child(key: PRNGKeyArray, i: int) -> Int[Scalar, ""]:
+    child_keys = jr.split(k5, n_nodes * 2)
+    indices = jnp.arange(n_nodes)
+
+    def random_child_v(key_i):
+        key, i = key_i
         total = (n_nodes - i - 1) + N_LEAVES
         choice = jr.randint(key, (), 0, total)
         return jax.lax.cond(
@@ -162,14 +145,14 @@ def random_dag_genome(key: PRNGKeyArray, n_nodes: int, n_rules: int) -> DAGGenom
             operand=None,
         )
 
-    keys = jr.split(k4, n_nodes * 2)
-    left = jnp.array([random_child(keys[i], i) for i in range(n_nodes)])
-    right = jnp.array([random_child(keys[i + n_nodes], i) for i in range(n_nodes)])
+    left = jax.vmap(random_child_v)((child_keys[:n_nodes], indices))
+    right = jax.vmap(random_child_v)((child_keys[n_nodes:], indices))
 
     leaf_is_reroll, leaf_mask_left, leaf_mask_right, leaf_mask_op, leaf_score_cat = make_leaves()
 
     return DAGGenome(
-        rules=rules,
+        rules_left=rules_left,
+        rules_right=rules_right,
         thresholds=thresholds,
         binary_ops=binary_ops,
         left=left,
@@ -211,14 +194,21 @@ def mutate_connections(
     k1, k2 = jr.split(key)
     should_mutate = jr.bernoulli(k1, p, conn.shape)
     indices = jnp.arange(conn.shape[0])
-    total = (n_nodes - indices - 1) + n_leaves
-    choice = jr.randint(k2, conn.shape, 0, 1000) % total
-    new_targets = jnp.where(
-        choice < (n_nodes - indices - 1),
-        indices + 1 + choice,
-        -(choice - (n_nodes - indices - 1) + 1),
-    )
-    return jnp.where(should_mutate, new_targets, conn)
+    mut_keys = jr.split(k2, conn.shape[0])
+
+    def mutate_one(
+        key: PRNGKeyArray, conn_val: Int[Scalar, ""], idx: Int[Scalar, ""], do_mutate: Bool[Scalar, ""]
+    ) -> Int[Scalar, ""]:
+        total = (n_nodes - idx - 1) + n_leaves
+        choice = jr.randint(key, (), 0, total)
+        new_target = jnp.where(
+            choice < (n_nodes - idx - 1),
+            idx + 1 + choice,
+            -(choice - (n_nodes - idx - 1) + 1),
+        )
+        return jnp.where(do_mutate, new_target, conn_val)
+
+    return jax.vmap(mutate_one)(mut_keys, conn, indices, should_mutate)
 
 
 @jaxtyped(typechecker=typechecker)
@@ -237,17 +227,18 @@ def mutate_genome(
     p_binary_ops: float,
     p_mask_fields: float = 0.02,
 ) -> DAGGenome:
-    k1, k2, k3, k4, k5, k6, k7 = jr.split(key, 7)
+    k1, k2, k3, k4, k5, k6, k7, k8, k9 = jr.split(key, 9)
     return DAGGenome(
         thresholds=mutate_thresholds(k1, dag.thresholds, sigma_thresh),
-        rules=mutate_rules(k2, dag.rules, N_STATE_PRIMITIVES, p_rules),
-        binary_ops=mutate_binary_ops(k3, dag.binary_ops, p_binary_ops),
-        left=mutate_connections(k4, dag.left, dag.rules.shape[0], N_LEAVES, p_connections),
-        right=mutate_connections(k5, dag.right, dag.rules.shape[0], N_LEAVES, p_connections),
+        rules_left=mutate_rules(k2, dag.rules_left, N_STATE_PRIMITIVES, p_rules),
+        rules_right=mutate_rules(k3, dag.rules_right, N_STATE_PRIMITIVES, p_rules),
+        binary_ops=mutate_binary_ops(k4, dag.binary_ops, p_binary_ops),
+        left=mutate_connections(k5, dag.left, dag.rules_left.shape[0], N_LEAVES, p_connections),
+        right=mutate_connections(k6, dag.right, dag.rules_right.shape[0], N_LEAVES, p_connections),
         leaf_is_reroll=dag.leaf_is_reroll,
-        leaf_mask_left=mutate_leaf_mask_field(k6, dag.leaf_mask_left, N_MASK_PRIMITIVES, p_mask_fields),
-        leaf_mask_right=mutate_leaf_mask_field(k6, dag.leaf_mask_right, N_MASK_PRIMITIVES, p_mask_fields),
-        leaf_mask_op=mutate_leaf_mask_field(k7, dag.leaf_mask_op, N_MASK_BOOL_OPS, p_mask_fields),
+        leaf_mask_left=mutate_leaf_mask_field(k7, dag.leaf_mask_left, N_MASK_PRIMITIVES, p_mask_fields),
+        leaf_mask_right=mutate_leaf_mask_field(k8, dag.leaf_mask_right, N_MASK_PRIMITIVES, p_mask_fields),
+        leaf_mask_op=mutate_leaf_mask_field(k9, dag.leaf_mask_op, N_MASK_BOOL_OPS, p_mask_fields),
         leaf_score_cat=dag.leaf_score_cat,
     )
 
@@ -259,7 +250,7 @@ def mutate_genome(
 
 def subtree_crossover(parent_a: DAGGenome, parent_b: DAGGenome, key: PRNGKeyArray) -> DAGGenome:
     k1, k2 = jr.split(key)
-    n_nodes = parent_a.rules.shape[0]
+    n_nodes = parent_a.rules_left.shape[0]
     point_a = jr.randint(k1, (), 1, n_nodes)
     point_b = jr.randint(k2, (), 1, n_nodes)
     offset = point_a - point_b
@@ -273,7 +264,8 @@ def subtree_crossover(parent_a: DAGGenome, parent_b: DAGGenome, key: PRNGKeyArra
 
     return DAGGenome(
         thresholds=jnp.where(take_from_b, parent_b.thresholds, parent_a.thresholds),
-        rules=jnp.where(take_from_b, parent_b.rules, parent_a.rules),
+        rules_left=jnp.where(take_from_b, parent_b.rules_left, parent_a.rules_left),
+        rules_right=jnp.where(take_from_b, parent_b.rules_right, parent_a.rules_right),
         binary_ops=jnp.where(take_from_b, parent_b.binary_ops, parent_a.binary_ops),
         left=remap_conn(parent_b.left, parent_a.left, take_from_b),
         right=remap_conn(parent_b.right, parent_a.right, take_from_b),
@@ -288,7 +280,7 @@ def subtree_crossover(parent_a: DAGGenome, parent_b: DAGGenome, key: PRNGKeyArra
 @jaxtyped(typechecker=typechecker)
 def single_point_crossover(parent_a: DAGGenome, parent_b: DAGGenome, key: PRNGKeyArray) -> DAGGenome:
     k1, k2 = jr.split(key)
-    n_nodes = parent_a.rules.shape[0]
+    n_nodes = parent_a.rules_left.shape[0]
     node_mask = jr.bernoulli(k1, 0.5, (n_nodes,))
     leaf_mask = jr.bernoulli(k2, 0.5, (N_LEAVES,))
 
@@ -300,7 +292,8 @@ def single_point_crossover(parent_a: DAGGenome, parent_b: DAGGenome, key: PRNGKe
 
     return DAGGenome(
         thresholds=mix_n(parent_a.thresholds, parent_b.thresholds),
-        rules=mix_n(parent_a.rules, parent_b.rules),
+        rules_left=mix_n(parent_a.rules_left, parent_b.rules_left),
+        rules_right=mix_n(parent_a.rules_right, parent_b.rules_right),
         binary_ops=mix_n(parent_a.binary_ops, parent_b.binary_ops),
         left=mix_n(parent_a.left, parent_b.left),
         right=mix_n(parent_a.right, parent_b.right),

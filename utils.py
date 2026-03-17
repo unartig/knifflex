@@ -17,7 +17,7 @@ def timing(f: Callable) -> Callable:
         ts = time()
         result = f(*args, **kw)
         te = time()
-        print(f"func:{f.__name__!r} took: {(te - ts) * 1000:2.6f} sec")
+        print(f"func:{f.__name__!r} took: {(te - ts):2.2f} sec")
         return result
 
     return wrap

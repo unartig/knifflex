@@ -32,9 +32,9 @@ REROLL_LISTS = jnp.array(list(product([0, 1], repeat=5)), dtype=jnp.bool)
 
 @jaxtyped(typechecker=typechecker)
 def mask_to_reroll_idx(keep_mask: Bool[Array, "5"]) -> Int[Array, ""]:
-    reroll_mask = ~keep_mask  # (5,) bool - True means reroll this die
-    matches = jnp.all(reroll_mask[None, :] == REROLL_LISTS, axis=1)  # (32,)
-    return jnp.argmax(matches).astype(jnp.int32)
+    reroll = ~keep_mask  # (5,) bool - True means reroll this die
+    bits = jnp.array([1, 2, 4, 8, 16], dtype=jnp.int32)
+    return jnp.sum(reroll.astype(jnp.int32) * bits).astype(jnp.int32)
 
 
 @jaxtyped(typechecker=typechecker)
@@ -183,42 +183,41 @@ def score_upper(dice: DiceArray, face: Int[Array, ""] | int) -> Int[Array, ""]:
 
 
 @jaxtyped(typechecker=typechecker)
-def score_full_house(wurf: DiceArray) -> ScalarLike:
-    counts = jnp.array([jnp.sum(wurf == i) for i in range(1, 7)])
-
-    has_three = jnp.sum(counts == 3) == 1
-    has_two = jnp.sum(counts == 2) == 1
-    is_full_house = has_three & has_two
-
-    return jnp.where(is_full_house, 25, 0)
+def score_full_house(wurf: DiceArray) -> Int[Array, ""]:
+    counts = jnp.bincount(wurf, length=7)[1:]  # skip face 0
+    has_three = jnp.any(counts == 3)
+    has_two = jnp.any(counts == 2)
+    return jnp.where(has_three & has_two, 25, 0)
 
 
 @jaxtyped(typechecker=typechecker)
 def score_three_of_a_kind(dice: DiceArray) -> Int[Array, ""]:
-    counts = jnp.array([jnp.sum(dice == i) for i in range(1, 7)])
-    return jnp.where(jnp.max(counts) >= 3, jnp.sum(dice), 0)
+    return jnp.where(jnp.max(jnp.bincount(dice, length=7)) >= 3, jnp.sum(dice), 0)
 
 
 @jaxtyped(typechecker=typechecker)
 def score_four_of_a_kind(dice: DiceArray) -> Int[Array, ""]:
-    counts = jnp.array([jnp.sum(dice == i) for i in range(1, 7)])
-    return jnp.where(jnp.max(counts) >= 4, jnp.sum(dice), 0)
+    return jnp.where(jnp.max(jnp.bincount(dice, length=7)) >= 4, jnp.sum(dice), 0)
 
 
 @jaxtyped(typechecker=typechecker)
 def score_small_straight(wurf: DiceArray) -> Int[Array, ""]:
-    sequences = jnp.array([[1, 2, 3, 4], [2, 3, 4, 5], [3, 4, 5, 6]])
-    has_all = jnp.array([jnp.all(jnp.array([jnp.any(wurf == val) for val in seq])) for seq in sequences])
-
-    return jnp.where(jnp.any(has_all), 30, 0)
+    present = jnp.bincount(wurf, length=7)[1:] > 0  # shape (6,)
+    # check 4 consecutive present
+    has = jnp.any(jnp.stack([
+        present[0] & present[1] & present[2] & present[3],
+        present[1] & present[2] & present[3] & present[4],
+        present[2] & present[3] & present[4] & present[5],
+    ]))
+    return jnp.where(has, 30, 0)
 
 
 @jaxtyped(typechecker=typechecker)
 def score_large_straight(wurf: DiceArray) -> Int[Array, ""]:
-    sequences = jnp.array([[1, 2, 3, 4, 5], [2, 3, 4, 5, 6]])
-    has_all = jnp.array([jnp.all(jnp.array([jnp.any(wurf == val) for val in seq])) for seq in sequences])
-
-    return jnp.where(jnp.any(has_all), 40, 0)
+    present = jnp.bincount(wurf, length=7)[1:] > 0
+    has = (present[0] & present[1] & present[2] & present[3] & present[4]) | \
+          (present[1] & present[2] & present[3] & present[4] & present[5])
+    return jnp.where(has, 40, 0)
 
 
 @jaxtyped(typechecker=typechecker)
@@ -305,14 +304,21 @@ def step(state: KniffelState, action: Int[Array, ""]) -> tuple[KniffelState, Int
             #     jnp.array(50),
             #     jnp.array(0),
             # )
+            case_score = score_case(case, state.dice)
+
+            is_upper = case < 6
+            upper_before = jnp.sum(jnp.where(state.scorecard[:6] >= 0, state.scorecard[:6], 0))
+            upper_after = upper_before + jnp.where(is_upper & valid, case_score, 0)
+            bonus_triggered = (upper_before < 63) & (upper_after >= 63)
+            upper_bonus = jnp.where(bonus_triggered, jnp.int32(35), jnp.int32(0))
 
             reward = jnp.where(
                 valid,
-                score_case(case, state.dice),  # + last_round_bonus,
+                case_score + upper_bonus,  # + last_round_bonus,
                 -(13 - state.round).squeeze(),  # punish early invalids
             )
 
-            new_scorecard = state.scorecard.at[case].set(jnp.where(valid, reward, state.scorecard[case]))
+            new_scorecard = state.scorecard.at[case].set(jnp.where(valid, case_score, state.scorecard[case]))
 
             return KniffelState(
                 dice=new_dice_roll(subkey),
