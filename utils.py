@@ -4,6 +4,7 @@ from itertools import product
 from time import time
 from typing import TypeAlias
 
+import numpy as np
 from beartype import beartype as typechecker  # noqa: F401
 from jaxtyping import Array, Int
 
@@ -22,3 +23,6 @@ def timing(f: Callable) -> Callable:
 
     return wrap
 
+
+def summarize_array(name: str, arr: Array | np.ndarray) -> str:
+    return f"{name}: {arr.shape}  dtype={arr.dtype}  ~{arr.nbytes / 1024:.0f} KB"

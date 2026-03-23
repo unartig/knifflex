@@ -3,71 +3,91 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
-from jaxtyping import Array, Float, Int, PRNGKeyArray, Scalar, Shaped, jaxtyped
+from jaxtyping import Array, Float, Int, PRNGKeyArray, Scalar
 from tensorboardX import SummaryWriter
 
 from game import KniffelState, reset, step
 from genome import (
     DAGGenome,
     crossover_genomes,
-    max_depth_from_nodes,
     max_reachable_depth,
     mutate_genome,
     random_dag_genome,
 )
 from graph_traverse import traverse
+from log import log_game
 from rule_primitives import N_STATE_PRIMITIVES
-from utils import typechecker
+from vizzies import FitnessRecord, dag_to_image, plot_fitness_history, plot_leaf_frequency, plot_signal_heatmap
 
 # ------------------------------------------------------------
 # Hyperparameters
 # ------------------------------------------------------------
 
-key = jr.key(123)
 
-K = 8  # Survival pressure — larger → more pressure
+# --- Infrastructure ---
+SEED = 123
+key = jr.key(SEED)
 N_ISLANDS = 4
-ISLAND_SIZE = 2**9  # individuals per island (512)
-POP_SIZE = N_ISLANDS * ISLAND_SIZE  # 2048 total, same as before
-EPISODES = 2048
+ISLAND_SIZE = 512  # Population per island
+EPISODES = 1024  # Number of games for evaluation
+EPOCHS = 10000  # Total training generations
+MIGRATE_EVERY = 10  # Generations between island migrations
+N_MIGRANTS = 16  # Number of top individuals to swap
 
-N_NODES = 512
-MAX_DEPTH = max_depth_from_nodes(N_NODES)
-TOURNAMENT_SIZE = 4
+# --- Genome Architecture ---
+N_NODES = 16
+MAX_DEPTH = N_NODES - 1  # Max steps in DAG traversal
 
-ISLAND_MU = ISLAND_SIZE // K  # elites kept per island
-ISLAND_CHILDREN = ISLAND_SIZE - ISLAND_MU
+# --- Evolutionary Pressure ---
+SURVIVAL_RATIO = 0.25  # Keep top %
+TOURNAMENT_SIZE = 3
 
-MIGRATE_EVERY = 25  # epochs between ring migrations
-N_MIGRANTS = 4  # individuals exchanged per island pair
+# --- Crossover Schedule ---
+P_CROSSOVER_START = 0.01  # low early — let structure develop
+P_CROSSOVER_PEAK = 0.1  # peak at midpoint — mix diverse individuals
+P_CROSSOVER_END = 0.01  # taper late — refine without disruption
+CROSSOVER_PEAK_AT = 0.15  # fraction of EPOCHS where peak occurs
 
-EPOCHS = int(1e4)
+# --- Mutation Schedule (Start -> End) ---
+# Structural changes (adding/removing logic) should decay
+P_STRUCT_START = 0.1
+P_STRUCT_END = 0.03
 
-SIGMA_THRESHOLDS = 0.05  # magnitude of threshold mutations
-P_MUTATE_RULES = 0.02  # probability of rule change
-P_MUTATE_CONNS = 0.005  # probability of child pointer change
-P_MUTATE_BINARY_OPS = 0.05  # probability binary op change
-P_CROSSOVER = 0.33  # probability of crossover
-P_CROSSOVER_RATIO = 0.5  # single vs subtree crossover
+# Parameter changes (thresholds/rule indices) stay relatively steady
+P_PARAM_START = 0.15
+P_PARAM_END = 0.10
 
+# Mutation noise (Sigma) for thresholds
+SIGMA_START = 0.3
+SIGMA_END = 0.02
+
+# The "Innovation Driver": Multiplier for mutations on inactive nodes
+INACTIVE_MUT_MULT = 10.0
+
+REEVAL_EVERY = 1
+TARGET_DIV = 0.1
 
 writer = SummaryWriter()
 
 hparams = {
-    "K": K,
     "N_ISLANDS": N_ISLANDS,
     "ISLAND_SIZE": ISLAND_SIZE,
-    "POP_SIZE": POP_SIZE,
     "EPISODES": EPISODES,
     "N_NODES": N_NODES,
     "TOURNAMENT_SIZE": TOURNAMENT_SIZE,
-    "P_MUTATE_RULES": P_MUTATE_RULES,
-    "P_MUTATE_CONNS": P_MUTATE_CONNS,
-    "P_CROSSOVER": P_CROSSOVER,
+    "P_CROSSOVER_START": P_CROSSOVER_START,
+    "P_CROSSOVER_PEAK": P_CROSSOVER_PEAK,
+    "P_CROSSOVER_END": P_CROSSOVER_END,
+    "CROSSOVER_PEAK_AT": CROSSOVER_PEAK_AT,
     "MIGRATE_EVERY": MIGRATE_EVERY,
     "N_MIGRANTS": N_MIGRANTS,
+    "SURVIVAL_RATIO": SURVIVAL_RATIO,
+    "INACTIVE_MUT_MULT": INACTIVE_MUT_MULT,
+    "P_STRUCT_START": P_STRUCT_START,
+    "SIGMA_START": SIGMA_START,
+    "TARGET_DIV": TARGET_DIV,
 }
-writer.add_hparams(hparams, {}, name="")
+writer.add_hparams(hparams, {}, name="")  # ty:ignore[invalid-argument-type]
 
 # ------------------------------------------------------------
 # Policy  (island_size x episodes)
@@ -106,80 +126,116 @@ def run_batch(population: DAGGenome, keys: PRNGKeyArray):
     return rewards, final_states
 
 
-# ------------------------------------------------------------
-# Island-level crossover
-# ------------------------------------------------------------
+N_ELITES = int(ISLAND_SIZE * SURVIVAL_RATIO)
+N_CHILDREN = ISLAND_SIZE - N_ELITES
 
 
-def crossover_stage_island(
-    parents_a: DAGGenome, parents_b: DAGGenome, key: PRNGKeyArray, p_cross: float, p_ratio: float
-) -> DAGGenome:
-    k1, k2 = jr.split(key)
-    cross_keys = jr.split(k1, ISLAND_CHILDREN)
-    children_crossed = jax.vmap(crossover_genomes, in_axes=(0, 0, 0, None))(cross_keys, parents_a, parents_b, p_ratio)
-    do_cross = jr.bernoulli(k2, p_cross, (ISLAND_CHILDREN,))
-    return jtu.tree_map(
-        lambda crossed, p_a: jnp.where(do_cross[:, None] if crossed.ndim > 1 else do_cross, crossed, p_a),
-        children_crossed,
-        parents_a,
-    )
+def _evaluate_one_island(pop: DAGGenome, key: PRNGKeyArray):
+    pop_size = pop.rules_left.shape[0]
+    ep_keys = jax.vmap(lambda j: jr.fold_in(key, j))(jnp.arange(EPISODES))
+    ep_keys_bc = jnp.broadcast_to(ep_keys[None], (pop_size, EPISODES))
+    rewards, states = run_batch(pop, ep_keys_bc)
+
+    raw_fitness = jnp.mean(rewards, axis=1)  # (pop_size,)
+
+    # Structural fingerprint: active rules_left
+    fingerprints = jax.vmap(lambda g: g.rules_left * g.get_active_mask())(pop).astype(
+        jnp.float32
+    )  # (pop_size, N_NODES)
+
+    # Each individual's mean hamming distance to the rest of the island
+    # roll comparison is O(pop) not O(pop^2)
+    dists = jnp.mean(
+        jnp.stack(
+            [
+                jnp.mean(fingerprints != jnp.roll(fingerprints, i, axis=0), axis=1)
+                for i in range(1, 9)  # 8 offsets as cheap approximation
+            ]
+        ),
+        axis=0,
+    )  # (pop_size,) — high = structurally unique
+
+    # normalize diversity to match fitness scale
+    dist_mean = jnp.mean(dists)
+    dist_std = jnp.std(dists) + 1e-8
+
+    fit_std = jnp.std(raw_fitness) + 1e-8
+    current_div = jnp.mean(dists)  # proxy for island diversity right now
+    alpha = jnp.clip(0.3 * (TARGET_DIV - current_div) / TARGET_DIV, 0.0, 0.5)
+
+    # rescale: diversity bonus has same std as fitness, weighted by alpha
+    diversity_bonus = ((dists - dist_mean) / dist_std) * fit_std * alpha
+
+    return raw_fitness + diversity_bonus, jnp.std(rewards, axis=1), states
 
 
-# ------------------------------------------------------------
-# Island-level evolution step  (no evaluation inside)
-# ------------------------------------------------------------
-
-
-@eqx.filter_jit
-def evolve_island(
+def _evolve_one_island(
     population: DAGGenome,
     fitnesses: Float[Array, " ISLAND_SIZE"],
     key: PRNGKeyArray,
-):
-    k_sel, k_cross, k_mut, k_idx, k_idx1 = jr.split(key, 5)
+    epoch: Int[Array, ""],
+) -> tuple[DAGGenome, Float[Array, " N_ELITES"]]:
+    k_sel, k_cross, k_mut = jr.split(key, 3)
 
-    # Tournament selection → ISLAND_MU elites
-    tournament_keys = jr.split(k_sel, ISLAND_MU)
-
+    # Selection
     def tournament_select_one(k):
         idx = jr.choice(k, ISLAND_SIZE, (TOURNAMENT_SIZE,), replace=False)
         return idx[jnp.argmax(fitnesses[idx])]
 
-    elite_idx = jax.vmap(tournament_select_one)(tournament_keys)
+    elite_idx = jax.vmap(tournament_select_one)(jr.split(k_sel, N_ELITES))
     elites = jtu.tree_map(lambda x: x[elite_idx], population)
-    elite_fitnesses = fitnesses[elite_idx]
 
-    # Parent selection from elites (diversity-guaranteed offset)
-    idx_a = jr.randint(k_idx, (ISLAND_CHILDREN,), 0, ISLAND_MU)
-    offset = jr.randint(k_idx1, (ISLAND_CHILDREN,), 1, ISLAND_MU)
-    idx_b = (idx_a + offset) % ISLAND_MU
-
+    # Crossover + mutation → children
+    t = epoch.astype(jnp.float32) / EPOCHS
+    peak = jnp.float32(CROSSOVER_PEAK_AT)
+    p_cross = jnp.where(
+        t < peak,
+        P_CROSSOVER_START + (P_CROSSOVER_PEAK - P_CROSSOVER_START) * (t / peak),
+        P_CROSSOVER_PEAK + (P_CROSSOVER_END - P_CROSSOVER_PEAK) * ((t - peak) / (1.0 - peak)),
+    )
+    k_idx_a, k_idx_b = jr.split(k_cross)
+    idx_a = jr.randint(k_idx_a, (N_CHILDREN,), 0, N_ELITES)
+    idx_b = (idx_a + jr.randint(k_idx_b, (N_CHILDREN,), 1, N_ELITES)) % N_ELITES
     parents_a = jtu.tree_map(lambda x: x[idx_a], elites)
     parents_b = jtu.tree_map(lambda x: x[idx_b], elites)
+    cross_keys = jr.split(k_cross, N_CHILDREN)
+    children = jax.vmap(crossover_genomes, in_axes=(0, 0, 0, None))(
+        cross_keys, parents_a, parents_b, jnp.float32(p_cross)
+    )
+    progress = jnp.clip(1.0 - (epoch.astype(jnp.float32) / EPOCHS), 0.0, 1.0)
+    mut_keys = jr.split(k_mut, N_CHILDREN)
+    children = jax.vmap(mutate_genome, in_axes=(0, 0, None, None, None, None))(
+        children,
+        mut_keys,
+        P_STRUCT_END + (P_STRUCT_START - P_STRUCT_END) * progress,
+        P_PARAM_END + (P_PARAM_START - P_PARAM_END) * progress,
+        jnp.float32(INACTIVE_MUT_MULT),
+        SIGMA_END + (SIGMA_START - SIGMA_END) * progress,
+    )
 
-    # Crossover + mutation
-    children = crossover_stage_island(parents_a, parents_b, k_cross, P_CROSSOVER, P_CROSSOVER_RATIO)
-
-    mut_keys = jr.split(k_mut, ISLAND_CHILDREN)
-    children = jax.vmap(
-        lambda g, k: mutate_genome(g, k, SIGMA_THRESHOLDS, P_MUTATE_CONNS, P_MUTATE_RULES, P_MUTATE_BINARY_OPS)
-    )(children, mut_keys)
-
-    return children, elites, elite_fitnesses
-
-
-# ------------------------------------------------------------
-# Island-level child evaluation
-# ------------------------------------------------------------
+    # Merge — no fitness carried forward, everything gets evaluated fresh
+    new_pop = jtu.tree_map(lambda e, c: jnp.concatenate([e, c], axis=0), elites, children)
+    return new_pop  # (ISLAND_SIZE, N_NODES)
 
 
 @eqx.filter_jit
-def evaluate_island(children: DAGGenome, key: PRNGKeyArray):
-    """Evaluate ISLAND_CHILDREN individuals on shared episode seeds."""
-    ep_keys = jax.vmap(lambda j: jr.fold_in(key, j))(jnp.arange(EPISODES))
-    ep_keys_broadcast = jnp.broadcast_to(ep_keys[None], (ISLAND_CHILDREN, EPISODES))
-    rewards, states = run_batch(children, ep_keys_broadcast)
-    return jnp.mean(rewards, axis=1), states
+def train_step(
+    pop: DAGGenome,
+    fitnesses: Float[Array, "N_ISLANDS ISLAND_SIZE"],
+    key: PRNGKeyArray,
+    epoch: Int[Array, ""],
+) -> tuple:
+    k_evolve, k_eval = jr.split(key)
+    island_ev_keys = jr.split(k_evolve, N_ISLANDS)
+    island_eval_keys = jr.split(k_eval, N_ISLANDS)
+
+    new_pop = jax.vmap(_evolve_one_island, in_axes=(0, 0, 0, None))(pop, fitnesses, island_ev_keys, epoch)
+
+    new_fitnesses, fitness_stds, final_states = jax.vmap(_evaluate_one_island, in_axes=(0, 0))(
+        new_pop, island_eval_keys
+    )
+
+    return new_pop, new_fitnesses, fitness_stds, final_states
 
 
 # ------------------------------------------------------------
@@ -190,25 +246,48 @@ def evaluate_island(children: DAGGenome, key: PRNGKeyArray):
 def migrate(
     pop: DAGGenome,
     fitnesses: Float[Array, "N_ISLANDS ISLAND_SIZE"],
+    wc_pop: DAGGenome,
+    wc_fitnesses: Float[Array, " ISLAND_SIZE"],
 ) -> tuple[DAGGenome, Float[Array, "N_ISLANDS ISLAND_SIZE"]]:
-    # Identify top / bottom N_MIGRANTS per island
-    top_idx = jnp.argsort(fitnesses, axis=1)[:, -N_MIGRANTS:]  # (N_ISLANDS, N_MIGRANTS)
-    worst_idx = jnp.argsort(fitnesses, axis=1)[:, :N_MIGRANTS]
+    """Ring migration between main islands + wildcard donation.
 
-    # Gather migrants then rotate one step (ring)
-    migrants = jtu.tree_map(lambda x: x[jnp.arange(N_ISLANDS)[:, None], top_idx], pop)
-    migrants = jtu.tree_map(lambda x: jnp.roll(x, 1, axis=0), migrants)
+    Main islands: top N_MIGRANTS rotate clockwise into worst N_MIGRANTS slots.
+    Wildcard:     donates its top N_MIGRANTS into the *next* worst N_MIGRANTS slots,
+                  so ring and wildcard migrants never overwrite each other.
+    """
+    sorted_idx = jnp.argsort(fitnesses, axis=1)  # ascending
 
-    migrant_fitnesses = fitnesses[jnp.arange(N_ISLANDS)[:, None], top_idx]
-    migrant_fitnesses = jnp.roll(migrant_fitnesses, 1, axis=0)
+    top_idx = sorted_idx[:, -N_MIGRANTS:]  # best  → will emigrate
+    worst_idx = sorted_idx[:, :N_MIGRANTS]  # worst → ring targets
+    wc_idx = sorted_idx[:, N_MIGRANTS : 2 * N_MIGRANTS]  # next worst → wildcard targets
 
-    # Inject into worst slots
+    # ── Ring among main islands ──────────────────────────────────────
+    ring_migrants = jtu.tree_map(lambda x: x[jnp.arange(N_ISLANDS)[:, None], top_idx], pop)
+    ring_migrants = jtu.tree_map(lambda x: jnp.roll(x, 1, axis=0), ring_migrants)
+    ring_fit = jnp.roll(fitnesses[jnp.arange(N_ISLANDS)[:, None], top_idx], 1, axis=0)
+
     pop = jtu.tree_map(
         lambda p, m: p.at[jnp.arange(N_ISLANDS)[:, None], worst_idx].set(m),
         pop,
-        migrants,
+        ring_migrants,
     )
-    fitnesses = fitnesses.at[jnp.arange(N_ISLANDS)[:, None], worst_idx].set(migrant_fitnesses)
+    fitnesses = fitnesses.at[jnp.arange(N_ISLANDS)[:, None], worst_idx].set(ring_fit)
+
+    # ── Wildcard donation to every main island ───────────────────────
+    wc_top_idx = jnp.argsort(wc_fitnesses)[-N_MIGRANTS:]
+    wc_migrants = jtu.tree_map(lambda x: x[wc_top_idx], wc_pop)
+    wc_fit_vals = wc_fitnesses[wc_top_idx]
+
+    wc_migrants_bc = jtu.tree_map(lambda x: jnp.broadcast_to(x[None], (N_ISLANDS,) + x.shape), wc_migrants)
+    wc_fit_bc = jnp.broadcast_to(wc_fit_vals[None], (N_ISLANDS, N_MIGRANTS))
+
+    pop = jtu.tree_map(
+        lambda p, m: p.at[jnp.arange(N_ISLANDS)[:, None], wc_idx].set(m),
+        pop,
+        wc_migrants_bc,
+    )
+    fitnesses = fitnesses.at[jnp.arange(N_ISLANDS)[:, None], wc_idx].set(wc_fit_bc)
+
     return pop, fitnesses
 
 
@@ -219,17 +298,62 @@ def migrate(
 
 @eqx.filter_jit
 def population_diversity(population: DAGGenome) -> Float[Scalar, ""]:
+    # Only look at active nodes per individual
+    active = jax.vmap(DAGGenome.get_active_mask)(
+        jtu.tree_map(lambda x: x.reshape(-1, N_NODES), population)
+    )  # (N_ISLANDS * ISLAND_SIZE, N_NODES)
+
     flat_rl = population.rules_left.reshape(-1, N_NODES)
     flat_rr = population.rules_right.reshape(-1, N_NODES)
     flat_lc = population.left.reshape(-1, N_NODES)
 
-    def rule_diff(rules):
-        mode = jnp.round(jnp.mean(rules.astype(jnp.float32), axis=0)).astype(jnp.int32)
-        return jnp.mean(rules != mode[None, :])
+    # Zero out inactive nodes so they don't contribute
+    rl_a = jnp.where(active, flat_rl, 0)
+    rr_a = jnp.where(active, flat_rr, 0)
+    lc_a = jnp.where(active, flat_lc, 0)
 
-    rule_div = rule_diff(flat_rl) + rule_diff(flat_rr)
-    conn_div = jnp.mean(flat_lc != jnp.round(jnp.mean(flat_lc, axis=0))[None, :])
-    return (rule_div + conn_div) / 2.0
+    # Pairwise Hamming on a random subsample (full pairwise is O(pop^2))
+    # Compare each individual against a rolled version of itself
+    def hamming(a, b):
+        return jnp.mean(a != b, axis=1)  # (pop,) per-individual diff
+
+    rl_div = jnp.mean(hamming(rl_a, jnp.roll(rl_a, 1, axis=0)))
+    rr_div = jnp.mean(hamming(rr_a, jnp.roll(rr_a, 1, axis=0)))
+    lc_div = jnp.mean(hamming(lc_a, jnp.roll(lc_a, 1, axis=0)))
+
+    return (rl_div + rr_div + lc_div) / 3.0
+
+
+# ------------------------------------------------------------
+# Wildcard island
+# ------------------------------------------------------------
+# Lives outside the main pop array so train_step shape never changes.
+# - Evolves independently each epoch (same train_step, N_ISLANDS=1 slice)
+# - Skipped by ring migration entirely
+# - Completely reseeded from scratch at every migration event
+# - Its best individual can still be picked for the global best log
+
+
+@eqx.filter_jit
+def wildcard_step(
+    wc_pop: DAGGenome,
+    wc_fitnesses: Float[Array, " ISLAND_SIZE"],
+    key: PRNGKeyArray,
+    epoch: Int[Array, ""],
+) -> tuple[DAGGenome, Float[Array, " ISLAND_SIZE"], KniffelState]:
+    """Evolve + evaluate the single wildcard island."""
+    k_evolve, k_eval = jr.split(key)
+    new_pop = _evolve_one_island(wc_pop, wc_fitnesses, k_evolve, epoch)
+    new_fitnesses, _, final_states = _evaluate_one_island(new_pop, k_eval)
+    return new_pop, new_fitnesses, final_states
+
+
+def reseed_wildcard(key: PRNGKeyArray) -> tuple[DAGGenome, Float[Array, " ISLAND_SIZE"]]:
+    """Burn the wildcard island to the ground and start fresh."""
+    wc_keys = jr.split(key, ISLAND_SIZE)
+    wc_pop = jax.vmap(random_dag_genome, in_axes=(0, None, None))(wc_keys, N_NODES, N_STATE_PRIMITIVES)
+    wc_fitnesses = jnp.zeros(ISLAND_SIZE)
+    return wc_pop, wc_fitnesses
 
 
 # ------------------------------------------------------------
@@ -238,12 +362,16 @@ def population_diversity(population: DAGGenome) -> Float[Scalar, ""]:
 
 # Population shape: (N_ISLANDS, ISLAND_SIZE, N_NODES)
 all_keys = jr.split(key, N_ISLANDS * ISLAND_SIZE + 1)
-pop_keys = all_keys[:-1].reshape(N_ISLANDS, ISLAND_SIZE)  # remove the , -1
+pop_keys = all_keys[:-1].reshape(N_ISLANDS, ISLAND_SIZE)
 key = all_keys[-1]
 
 population = jax.vmap(
     lambda island_keys: jax.vmap(random_dag_genome, in_axes=(0, None, None))(island_keys, N_NODES, N_STATE_PRIMITIVES)
 )(pop_keys)
+
+# Wildcard island — separate array, same size as a normal island
+key, k_wc = jr.split(key)
+wc_pop, wc_fitnesses = reseed_wildcard(k_wc)
 
 
 # ------------------------------------------------------------
@@ -252,56 +380,77 @@ population = jax.vmap(
 
 pop = population
 fitnesses = jnp.zeros((N_ISLANDS, ISLAND_SIZE))
+history: list[FitnessRecord] = []
 
 for epoch in range(EPOCHS):
-    key, k_island, k_eval, k_migrate = jr.split(key, 4)
+    key, k_step, k_wc_step, k_reseed, k_log = jr.split(key, 5)
 
-    # Ring migration every MIGRATE_EVERY epochs
     if epoch % MIGRATE_EVERY == 0 and epoch > 0:
-        pop, fitnesses = migrate(pop, fitnesses)
+        pop, fitnesses = migrate(pop, fitnesses, wc_pop, wc_fitnesses)
+        wc_pop, wc_fitnesses = reseed_wildcard(k_reseed)
 
-    island_keys = jr.split(k_island, N_ISLANDS)
-    eval_keys = jr.split(k_eval, N_ISLANDS)
+    pop, fitnesses, fitness_stds, final_states = train_step(pop, fitnesses, k_step, jnp.int32(epoch))
+    # key, k_step, k_wc_step, k_reseed, k_log = jr.split(key, 5)
 
-    # Evolve all islands in parallel
-    children, elites, elite_fitnesses = jax.vmap(evolve_island)(pop, fitnesses, island_keys)
+    # # Migration: wildcard donates its best then reseeds from scratch
+    # if epoch % MIGRATE_EVERY == 0 and epoch > 0:
+    #     pop, fitnesses = migrate(pop, fitnesses, wc_pop, wc_fitnesses)
+    #     wc_pop, wc_fitnesses = reseed_wildcard(k_reseed)
 
-    # Evaluate only the new children
-    child_fitnesses, states = jax.vmap(evaluate_island)(children, eval_keys)
+    # # Main islands — single fused GPU dispatch
+    # pop, fitnesses, fitness_stds, final_states = train_step(pop, fitnesses, k_step, jnp.int32(epoch))
 
-    # Reassemble
-    pop = jtu.tree_map(lambda e, c: jnp.concatenate([e, c], axis=1), elites, children)
-    fitnesses = jnp.concatenate([elite_fitnesses, child_fitnesses], axis=1)
+    # Wildcard — independent, always evolving toward next donation
+    wc_pop, wc_fitnesses, wc_states = wildcard_step(wc_pop, wc_fitnesses, k_wc_step, jnp.int32(epoch))
 
-    # Best individual across all islands
+    # --- Logging ---
     flat_fitnesses = fitnesses.reshape(-1)
-    best_flat_idx = jnp.argmax(flat_fitnesses)
+    wc_best_fit = float(jnp.max(wc_fitnesses))
+    avg_fit = float(jnp.mean(flat_fitnesses))
+    max_fit = float(jnp.max(flat_fitnesses))
+    avg_rounds = float(jnp.mean(final_states.round))
+
+    diversity = float(population_diversity(pop))
+
+    best_flat_idx = int(jnp.argmax(flat_fitnesses))
     best_island = best_flat_idx // ISLAND_SIZE
     best_local = best_flat_idx % ISLAND_SIZE
     best = jtu.tree_map(lambda x: x[best_island, best_local], pop)
-
-    # Logging
-    avg_fit = float(jnp.mean(flat_fitnesses))
-    max_fit = float(jnp.max(flat_fitnesses))
-    avg_rounds = float(jnp.mean(states.round))  # (N_ISLANDS, ISLAND_CHILDREN)
-    diversity = float(population_diversity(pop))
-    active_nodes = int(best.active_node_count)
+    avg_std = float(jnp.mean(fitness_stds))
+    max_std = float(jnp.max(fitness_stds))
 
     writer.add_scalar("Fitness/Average", avg_fit, epoch)
     writer.add_scalar("Fitness/Best", max_fit, epoch)
+    writer.add_scalar("Fitness/Wildcard_Best", wc_best_fit, epoch)
     writer.add_scalar("Stats/Average_Rounds", avg_rounds, epoch)
     writer.add_scalar("Stats/Diversity", diversity, epoch)
-    writer.add_scalar("Genome/Best_Active_Nodes", active_nodes, epoch)
-
+    writer.add_scalar("Fitness/Avg_Std", avg_std, epoch)
+    writer.add_scalar("Fitness/Max_Std", max_std, epoch)
     print(
-        f"[{epoch}] Fit: {avg_fit:.2f} | Best: {max_fit:.2f} | "
-        f"Div: {diversity:.3f} | N-Nodes: {active_nodes} | Rounds: {avg_rounds:.2f}"
+        f"[{epoch}] Fit: {avg_fit:.2f} ±{avg_std:.1f} | Best: {max_fit:.2f} | "
+        f"WC: {wc_best_fit:.2f} | Div: {diversity:.3f} | Rounds: {avg_rounds:.2f}"
     )
 
-    if epoch % 100 == 0:
+    if epoch % 10 == 0:
+        active_nodes = int(best.active_node_count)
         best_cpu = jax.device_get(best)
         actual_depth = max_reachable_depth(best_cpu)
-        print("Actual Depth", actual_depth)
+        print(
+            f"Active Nodes {active_nodes} | Depth {actual_depth}",
+        )
         writer.add_scalar("Genome/Best_Actual_Depth", actual_depth, epoch)
+        writer.add_scalar("Genome/Best_Active_Nodes", active_nodes, epoch)
+
+    # DAG image every 20 epochs
+    if epoch % 20 == 0:
+        best_jax = jax.device_put(best_cpu)
+        log_game(lambda s: traverse(best_jax, s, MAX_DEPTH), k_log)  # lean by default
+
+        img = dag_to_image(
+            best_cpu,
+            title=f"Best DAG — epoch {epoch}  fit={max_fit:.1f}",
+        )
+        # TensorBoard wants (C, H, W) uint8
+        writer.add_image("Genome/Best_DAG", img.transpose(2, 0, 1), epoch)
 
 writer.close()
