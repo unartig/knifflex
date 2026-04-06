@@ -20,6 +20,10 @@ CASE_NAMES = [
     "Kniffel",
 ]
 
+CASE_MAX = jnp.array(
+    [5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 25.0, 30.0, 30.0, 30.0, 40.0, 30.0, 50.0],
+    dtype=jnp.float32,
+)
 
 @jaxtyped(typechecker=typechecker)
 def score_upper(dice: DiceArray, face: Int[Array, ""] | int) -> Int[Array, ""]:

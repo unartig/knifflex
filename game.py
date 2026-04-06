@@ -10,6 +10,9 @@ from jaxtyping import Array, Bool, Int, PRNGKeyArray, UInt, jaxtyped
 
 from utils import DiceArray, ScoreCardArray, typechecker
 
+"""
+Optimal: 245,870775 of max. 375
+"""
 # ------------------------------------------------------------------ #
 #  Roll catalogue  (252 sorted 5-dice combos)                        #
 # ------------------------------------------------------------------ #
@@ -215,12 +218,6 @@ def reset(key: PRNGKeyArray, last_round_bonus: bool = False) -> KniffelState:
         key=key,
         last_round_bonus=jnp.array([last_round_bonus]),
     )
-
-
-# ------------------------------------------------------------------ #
-#  Action mask                                                        #
-# ------------------------------------------------------------------ #
-
 
 
 # ------------------------------------------------------------------ #
