@@ -141,11 +141,6 @@ elif GENOME_TYPE == "decomp":
 else:
     raise ValueError(f"Unknown GENOME_TYPE: {GENOME_TYPE!r}  (expected 'full' or 'decomp')")
 
-# ------------------------------------------------------------------ #
-#  Shared traverse / mutate / crossover                               #
-# ------------------------------------------------------------------ #
-
-
 @jaxtyped(typechecker=typechecker)
 def _mutate(
     genome: WGenome,
