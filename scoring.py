@@ -1,10 +1,11 @@
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Int, jaxtyped
+from jaxtyping import Array, Int, Int8, Scalar, jaxtyped
 
-from utils import DiceArray, typechecker
+from dice import DiceArray
+from utils import typechecker
 
-CASE_NAMES = [
+CAT_NAMES = [
     "Einsen",
     "Zweien",
     "Dreien",
@@ -20,34 +21,37 @@ CASE_NAMES = [
     "Kniffel",
 ]
 
-CASE_MAX = jnp.array(
+CAT_MAX = jnp.array(
     [5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 25.0, 30.0, 30.0, 30.0, 40.0, 30.0, 50.0],
     dtype=jnp.float32,
 )
 
-@jaxtyped(typechecker=typechecker)
-def score_upper(dice: DiceArray, face: Int[Array, ""] | int) -> Int[Array, ""]:
-    return jnp.sum(dice == face) * face
+N_CATS = len(CAT_NAMES)
 
 
 @jaxtyped(typechecker=typechecker)
-def score_full_house(wurf: DiceArray) -> Int[Array, ""]:
+def score_upper(dice: DiceArray, face: Int[Array, ""] | int) -> Int8[Scalar, ""]:
+    return (jnp.sum(dice == face) * face).astype(jnp.int8)
+
+
+@jaxtyped(typechecker=typechecker)
+def score_full_house(wurf: DiceArray) -> Int8[Scalar, ""]:
     counts = jnp.bincount(wurf, length=7)[1:]
-    return jnp.where(jnp.any(counts == 3) & jnp.any(counts == 2), 25, 0)
+    return (jnp.where(jnp.any(counts == 3) & jnp.any(counts == 2), 25, 0)).astype(jnp.int8)
 
 
 @jaxtyped(typechecker=typechecker)
-def score_three_of_a_kind(dice: DiceArray) -> Int[Array, ""]:
-    return jnp.where(jnp.max(jnp.bincount(dice, length=7)) >= 3, jnp.sum(dice), 0)
+def score_three_of_a_kind(dice: DiceArray) -> Int8[Scalar, ""]:
+    return (jnp.where(jnp.max(jnp.bincount(dice, length=7)) >= 3, jnp.sum(dice), 0)).astype(jnp.int8)
 
 
 @jaxtyped(typechecker=typechecker)
-def score_four_of_a_kind(dice: DiceArray) -> Int[Array, ""]:
-    return jnp.where(jnp.max(jnp.bincount(dice, length=7)) >= 4, jnp.sum(dice), 0)
+def score_four_of_a_kind(dice: DiceArray) -> Int8[Scalar, ""]:
+    return (jnp.where(jnp.max(jnp.bincount(dice, length=7)) >= 4, jnp.sum(dice), 0)).astype(jnp.int8)
 
 
 @jaxtyped(typechecker=typechecker)
-def score_small_straight(wurf: DiceArray) -> Int[Array, ""]:
+def score_small_straight(wurf: DiceArray) -> Int8[Scalar, ""]:
     present = jnp.bincount(wurf, length=7)[1:] > 0
     has = jnp.any(
         jnp.stack(
@@ -58,30 +62,30 @@ def score_small_straight(wurf: DiceArray) -> Int[Array, ""]:
             ]
         )
     )
-    return jnp.where(has, 30, 0)
+    return (jnp.where(has, 30, 0)).astype(jnp.int8)
 
 
 @jaxtyped(typechecker=typechecker)
-def score_large_straight(wurf: DiceArray) -> Int[Array, ""]:
+def score_large_straight(wurf: DiceArray) -> Int8[Scalar, ""]:
     present = jnp.bincount(wurf, length=7)[1:] > 0
     has = (present[0] & present[1] & present[2] & present[3] & present[4]) | (
         present[1] & present[2] & present[3] & present[4] & present[5]
     )
-    return jnp.where(has, 40, 0)
+    return (jnp.where(has, 40, 0)).astype(jnp.int8)
 
 
 @jaxtyped(typechecker=typechecker)
-def score_faces(wurf: DiceArray) -> Int[Array, ""]:
-    return jnp.sum(wurf)
+def score_faces(wurf: DiceArray) -> Int8[Scalar, ""]:
+    return (jnp.sum(wurf)).astype(jnp.int8)
 
 
 @jaxtyped(typechecker=typechecker)
-def score_kniffel(dice: DiceArray) -> Int[Array, ""]:
-    return jnp.where(jnp.all(dice == dice[0]), 50, 0)
+def score_kniffel(dice: DiceArray) -> Int8[Scalar, ""]:
+    return (jnp.where(jnp.all(dice == dice[0]), 50, 0)).astype(jnp.int8)
 
 
 @jaxtyped(typechecker=typechecker)
-def score_case(case_id: Int[Array, ""], dice: DiceArray) -> Int[Array, ""]:
+def score_case(case_id: Int[Array, ""], dice: DiceArray) -> Int8[Scalar, ""]:
     return jax.lax.switch(
         case_id,
         [

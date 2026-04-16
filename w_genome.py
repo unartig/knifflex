@@ -6,11 +6,11 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from jaxtyping import Array, Float, Int, PRNGKeyArray, Scalar, jaxtyped
+from jaxtyping import Array, Float, Int, PRNGKeyArray, Scalar, Shaped, jaxtyped
 
 from ev_table import get_ev_table
 from game import TRANSITION_TABLE
-from scoring import CASE_MAX
+from scoring import CAT_MAX, N_CATS
 from utils import typechecker
 
 if TYPE_CHECKING:
@@ -19,18 +19,8 @@ if TYPE_CHECKING:
 EV_TABLE, _MASK_TABLE, _ROLLS = (jnp.asarray(arr) for arr in get_ev_table())
 MASK_TABLE = _MASK_TABLE.astype(jnp.uint8)
 
-# ------------------------------------------------------------------ #
-#  Config — change these two lines to switch implementations          #
-# ------------------------------------------------------------------ #
-
-GENOME_TYPE: Literal["full", "decomp"] = "full"
-DECOMP_RANK: int = 4
-
-# ------------------------------------------------------------------ #
-#  Constants                                                          #
-# ------------------------------------------------------------------ #
-
-N_CATS = 13
+GENOME_TYPE: Literal["full", "decomp"] = "decomp"
+DECOMP_RANK: int = 1
 
 # Context layout (16 dims):
 #   [0:13]  normed_scores  — actual score / max_score if filled, else 0.0
@@ -41,15 +31,11 @@ N_CATS = 13
 CTX_DIM = 17
 
 
-# ------------------------------------------------------------------ #
-#  Context builder                                                    #
-# ------------------------------------------------------------------ #
-
-
+@jaxtyped(typechecker=typechecker)
 def build_context(state: KniffelState) -> Float[Array, f" {CTX_DIM}"]:
     scorecard = state.scorecard.astype(jnp.float32)
     filled_scores = jnp.where(scorecard >= 0, scorecard, 0.0)
-    normed_scores = filled_scores / CASE_MAX
+    normed_scores = filled_scores / CAT_MAX
 
     upper_filled = jnp.sum(filled_scores[:6])
     upper_sum = upper_filled / 63.0
@@ -60,25 +46,29 @@ def build_context(state: KniffelState) -> Float[Array, f" {CTX_DIM}"]:
     return jnp.concatenate([normed_scores, jnp.array([upper_sum, bonus_dist, rolls_left_norm, rounds_left_norm])])
 
 
-# ------------------------------------------------------------------ #
-#  FullWGenome                                                        #
-# ------------------------------------------------------------------ #
-
-
 @jaxtyped(typechecker=typechecker)
 class FullWGenome(eqx.Module):
     _W: Float[Array, f"{N_CATS} {CTX_DIM}"]
+    _W_scale: Float[Array, f"{N_CATS} {CTX_DIM}"]
+    bonus_uplift: Float[Scalar, ""] = eqx.field(default_factory=lambda: jnp.array(0.0))
 
     @property
     def W(self) -> Float[Array, f"{N_CATS} {CTX_DIM}"]:
         return self._W
 
+    @property
+    def W_scale(self) -> Float[Array, f"{N_CATS} {CTX_DIM}"]:
+        return self._W_scale
+
     @staticmethod
     def random(key: PRNGKeyArray, sigma: float = 0.1) -> FullWGenome:
+        kw, kws = jr.split(key, 2)
         # QR on the taller dimension, then transpose to fit (13, 16)
-        raw = jr.normal(key, (CTX_DIM, N_CATS))  # (16, 13)
+        raw = jr.normal(kw, (CTX_DIM, N_CATS))  # (16, 13)
         Q, _ = jnp.linalg.qr(raw)  # (16, 13) orthonormal columns
-        return FullWGenome(_W=Q.T * sigma)  # (13, 16)
+
+        _W_scale = jr.normal(kws, (N_CATS, CTX_DIM)) * 0.001
+        return FullWGenome(_W=Q.T * sigma, _W_scale=_W_scale)  # (13, 16)
 
     @staticmethod
     def crossover(pa: FullWGenome, pb: FullWGenome, key: PRNGKeyArray) -> FullWGenome:
@@ -96,42 +86,41 @@ class FullWGenome(eqx.Module):
         return jax.tree.unflatten(treedef, new_leaves)
 
 
-# ------------------------------------------------------------------ #
-#  DecompWGenome                                                      #
-# ------------------------------------------------------------------ #
-
-
 @jaxtyped(typechecker=typechecker)
 class DecompWGenome(eqx.Module):
     A: Float[Array, f"{N_CATS} {DECOMP_RANK}"]
     B: Float[Array, f"{DECOMP_RANK} {CTX_DIM}"]
 
-
-    @staticmethod
-    def empty() -> DecompWGenome:
-        A = jnp.ones((N_CATS, DECOMP_RANK))
-        B = jnp.ones((DECOMP_RANK, CTX_DIM))
-        return DecompWGenome(A=A, B=B)
+    A_scale: Float[Array, f"{N_CATS} {DECOMP_RANK}"]
+    B_scale: Float[Array, f"{DECOMP_RANK} {CTX_DIM}"]
+    bonus_uplift: Float[Scalar, ""] = eqx.field(default_factory=lambda: jnp.float32(0.0))
 
     @property
     def W(self) -> Float[Array, f"{N_CATS} {CTX_DIM}"]:
         return self.A @ self.B
 
+    @property
+    def W_scale(self) -> Float[Array, f"{N_CATS} {CTX_DIM}"]:
+        return self.A_scale @ self.B_scale
+
     @staticmethod
     def random(key: PRNGKeyArray, sigma: float = 0.1) -> DecompWGenome:
-        ka, kb = jr.split(key)
+        ka, kb, kas, kbs = jr.split(key, 4)
 
         A = jr.normal(ka, (N_CATS, DECOMP_RANK)) * sigma
         raw = jr.normal(kb, (CTX_DIM, DECOMP_RANK))  # tall matrix
         Q, _ = jnp.linalg.qr(raw)  # (16, 4) orthonormal columns
         B = Q.T * sigma  # (4, 16), scaled
 
-        return DecompWGenome(A=A, B=B)
+        A_scale = jr.normal(kas, (N_CATS, DECOMP_RANK)) * sigma
+        B_scale = jr.normal(kbs, (DECOMP_RANK, CTX_DIM)) * 0.001
+        return DecompWGenome(A=A, B=B, A_scale=A_scale, B_scale=B_scale)
 
     @staticmethod
     def crossover(pa: DecompWGenome, pb: DecompWGenome, key: PRNGKeyArray) -> DecompWGenome:
-        ka, kb = jr.split(key)
-        # Row-wise crossover: swaps entire latent profiles for categories (A)
+        ka, kb, kup = jr.split(key, 3)
+        # Row-wise crossover:
+        # swaps entire latent profiles for categories (A)
         # and entire basis vectors for features (B)
         mask_A = jr.bernoulli(ka, 0.5, (N_CATS, 1))
         mask_B = jr.bernoulli(kb, 0.5, (DECOMP_RANK, 1))
@@ -139,6 +128,9 @@ class DecompWGenome(eqx.Module):
         return DecompWGenome(
             A=jnp.where(mask_A, pa.A, pb.A),
             B=jnp.where(mask_B, pa.B, pb.B),
+            A_scale=jnp.where(mask_A, pa.A_scale, pb.A_scale),
+            B_scale=jnp.where(mask_B, pa.B_scale, pb.B_scale),
+            bonus_uplift=jnp.where(jr.bernoulli(kup), pa.bonus_uplift, pb.bonus_uplift),
         )
 
 
@@ -154,45 +146,42 @@ else:
 # ------------------------------------------------------------------ #
 
 
-def _traverse(genome: WGenome, state: KniffelState) -> Int[Scalar, ""]:
-    ctx = build_context(state)
-    cat_weights = genome.W @ ctx
-
-    return oracle_action(state, cat_weights)
-
-
+@jaxtyped(typechecker=typechecker)
 def _mutate(
     genome: WGenome,
     key: PRNGKeyArray,
     sigma: Float[Scalar, ""],
     p_reset: Float[Scalar, ""],
 ) -> WGenome:
-    """Perturbs every trainable leaf."""
-    leaves, treedef = jax.tree.flatten(
-        eqx.filter(genome, eqx.is_array),
-        is_leaf=lambda x: isinstance(x, jax.Array),
-    )
+    arrays, treedef = jax.tree.flatten(eqx.filter(genome, eqx.is_array))
+    n = len(arrays)
+    keys = jr.split(key, 3 * n).reshape(n, 3)
 
-    n_leaves = len(leaves)
-    keys = jr.split(key, 3 * n_leaves).reshape(n_leaves, 3)
+    # Scalar leaves (bonus_uplift) get a fixed small absolute perturbation
+    # rather than inheriting the weight sigma
+    @jaxtyped(typechecker=typechecker)
+    def leaf_sigma(leaf: Float[Array, "*"] | Float[Scalar, ""]) -> Float[Array, "*"] | Float[Scalar, ""]:
+        return jnp.where(leaf.ndim == 0, jnp.float32(0.5), sigma)
 
-    def _perturb(leaf, ks: PRNGKeyArray):
+    @jaxtyped(typechecker=typechecker)
+    def _perturb(leaf: Float[Array, "*"], ks: Shaped[PRNGKeyArray, " 3"]) -> Float[Array, "*"]:
         k1, k2, k3 = ks
-        noise = jr.normal(k1, leaf.shape) * sigma
+        s = leaf_sigma(leaf)
+        noise = jr.normal(k1, leaf.shape) * s
         reset_mask = jr.bernoulli(k2, p_reset, leaf.shape)
-        fresh = jr.normal(k3, leaf.shape) * 0.1
+        fresh = jr.normal(k3, leaf.shape) * jnp.where(leaf.ndim == 0, jnp.float32(1.0), jnp.float32(0.1))
         return jnp.where(reset_mask, fresh, leaf + noise)
 
-    new_leaves = [_perturb(lf, ks) for lf, ks in zip(leaves, keys, strict=True)]
+    new_leaves = [_perturb(lf, ks) for lf, ks in zip(arrays, keys, strict=True)]
     return jax.tree.unflatten(treedef, new_leaves)
 
 
-# ------------------------------------------------------------------ #
-#  Shared helpers                                                     #
-# ------------------------------------------------------------------ #
+@jaxtyped(typechecker=typechecker)
+def oracle_action(genome: WGenome, state: KniffelState) -> Int[Scalar, ""]:
+    ctx = build_context(state)
+    cat_weights = genome.W @ ctx
+    cat_scales = jax.nn.softplus(genome.W_scale @ ctx)
 
-
-def oracle_action(state: KniffelState, cat_weights: Float[Scalar, " 13"]) -> Int[Scalar, ""]:
     rl = state.rolls_left.squeeze().astype(jnp.int32)
     dice_idx = state.dice_idx.astype(jnp.int32)
     open_mask = state.scorecard < 0
@@ -202,25 +191,24 @@ def oracle_action(state: KniffelState, cat_weights: Float[Scalar, " 13"]) -> Int
     bonus_rem = jnp.clip(63.0 - upper_filled, 0.0, 63.0)
     bonus_earned = upper_filled >= 63
 
-    def compute_roll_utilities(rolls_idx: Int[Array, ""]) -> Float[Array, ""]:
-        """Computes the max possible weighted score for every roll (252) at a specific rolls_left."""
+    @jaxtyped(typechecker=typechecker)
+    def compute_cat_scores(rolls_idx: Int[Scalar, ""]) -> Float[Array, f"ROLLS {N_CATS}"]:
         raw_evs = EV_TABLE[:, rolls_idx, :]  # (252, 13)
-        # Apply uplift to the first 6 categories
-        uplift = jnp.where((raw_evs >= bonus_rem) & (jnp.arange(13) < 6) & (~bonus_earned), 35.0, 0.0)
-        weighted_scores = (raw_evs + uplift) * cat_weights
-        # Max over open categories for each roll
-        return jnp.max(jnp.where(open_mask, weighted_scores, -1e9), axis=1)
+        uplift = jnp.where((raw_evs >= bonus_rem) & (jnp.arange(13) < 6) & (~bonus_earned), genome.bonus_uplift, 0.0)
+        return (raw_evs + uplift) * cat_scales + cat_weights  # (252, 13)
 
-    # Calculate "Score Now" Utility
-    # We always need the current utility to decide whether to stop
-    now_utilities = compute_roll_utilities(jnp.int32(0))
+    cat_scores_now = compute_cat_scores(jnp.int32(0))  # (252, 13)
+    now_utilities = jnp.max(jnp.where(open_mask, cat_scores_now, -1e9), axis=1)  # (252,)
     val_now = now_utilities[dice_idx]
-    # what to score if we stop
-    score_cat = jnp.argmax(jnp.where(open_mask, (EV_TABLE[dice_idx, 0, :] + 0) * cat_weights, -1e9))
+    score_cat = jnp.argmax(jnp.where(open_mask, cat_scores_now[dice_idx], -1e9))  # consistent
 
     # Calculate "Reroll" Utility
     # We look at the utilities of the outcome of the NEXT roll (rl - 1)
     # Note: EV_TABLE[dice_idx, rl] is the EV of having 'rl' rolls remaining.
+    @jaxtyped(typechecker=typechecker)
+    def compute_roll_utilities(rolls_idx: Int[Scalar, ""]) -> Float[Array, " ROLLS"]:
+        return jnp.max(jnp.where(open_mask, compute_cat_scores(rolls_idx), -1e9), axis=1)
+
     future_utilities = compute_roll_utilities(rl)
 
     # Matrix Multiply: (32, 252) @ (252,) -> (32,)
@@ -242,11 +230,7 @@ def oracle_action(state: KniffelState, cat_weights: Float[Scalar, " 13"]) -> Int
     )
 
 
-# ------------------------------------------------------------------ #
-#  Public API — dispatch on GENOME_TYPE                               #
-# ------------------------------------------------------------------ #
-
-
+@jaxtyped(typechecker=typechecker)
 def population_get(population: WGenome, *indices: int) -> WGenome:
     genome = population
     for idx in indices:
@@ -254,8 +238,9 @@ def population_get(population: WGenome, *indices: int) -> WGenome:
     return genome
 
 
-def traverse_w(genome: WGenome, state: KniffelState) -> Int[Scalar, ""]:
-    return _traverse(genome, state)
+@jaxtyped(typechecker=typechecker)
+def genome_action(genome: WGenome, state: KniffelState) -> Int[Scalar, ""]:
+    return oracle_action(genome, state)
 
 
 @jaxtyped(typechecker=typechecker)
@@ -268,10 +253,12 @@ def mutate_w(
     return _mutate(genome, key, sigma, p_reset)
 
 
+@jaxtyped(typechecker=typechecker)
 def crossover_w(pa: WGenome, pb: WGenome, key: PRNGKeyArray) -> WGenome:
     return WGenome.crossover(pa, pb, key)
 
 
+@jaxtyped(typechecker=typechecker)
 def random_w_population(key: PRNGKeyArray, pop_size: int) -> WGenome:
     keys = jr.split(key, pop_size)
     return jax.vmap(WGenome.random)(keys)

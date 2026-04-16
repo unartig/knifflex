@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import PRNGKeyArray, Scalar, jaxtyped
 
-from game import CASE_NAMES, KniffelState, idx_to_dice, reset, step
+from game import CAT_NAMES, KniffelState, idx_to_dice, reset, step
 from utils import typechecker
 
 if TYPE_CHECKING:
@@ -186,7 +186,7 @@ def _log_lean(policy_fn: PolicyFn, key) -> None:
             cat = action - 32
             score = int(state.scorecard[cat])
             roll_chain = "  ".join(parts)
-            lines.append(f"Round {len(lines) + 1:2d} --- {roll_chain}  |  {CASE_NAMES[cat]:<16} {score:3d}")
+            lines.append(f"Round {len(lines) + 1:2d} --- {roll_chain}  |  {CAT_NAMES[cat]:<16} {score:3d}")
             parts = []
             roll_num = 1
 
@@ -214,7 +214,7 @@ def _log_pretty(policy_fn: PolicyFn, key: PRNGKeyArray) -> None:
             mask = [(action >> i) & 1 for i in range(5)]
             print(f"  ↳ reroll {mask}  (reward: {reward})")
         else:
-            print(f"  ↳ scored {CASE_NAMES[action - 32]}  (reward: {reward})")
+            print(f"  ↳ scored {CAT_NAMES[action - 32]}  (reward: {reward})")
 
 
 # ------------------------------------------------------------------ #
