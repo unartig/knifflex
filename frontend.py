@@ -1,151 +1,159 @@
-import os
-
+import curses
 import jax.numpy as jnp
-import jax.random as jr
-
-from game import KniffelState, action_to_str, reset, step
-from log import get_action_mask, pretty_print_state
 from scoring import CAT_NAMES
-from w_genome import WGenome, genome_action
+
+# Dice characters as requested
+CHAR_KEPT = "●"
+CHAR_HOVER = "○"
+CHAR_REROLL = "X"
 
 
-def clear() -> None:
-    os.system("clear")
+def get_dice_face(value, status):
+    """
+    status: 'kept', 'hover', or 'reroll'
+    """
+    dot = CHAR_KEPT if status == "kept" else (CHAR_HOVER if status == "hover" else CHAR_REROLL)
+
+    # Simple layout mapping for dice faces 1-6
+    # (Using the dot variable for the pips)
+    faces = {
+        1: ["         ", f"    {dot}    ", "         "],
+        2: [f" {dot}       ", "         ", f"       {dot} "],
+        3: [f" {dot}       ", f"    {dot}    ", f"       {dot} "],
+        4: [f" {dot}     {dot} ", "         ", f" {dot}     {dot} "],
+        5: [f" {dot}     {dot} ", f"    {dot}    ", f" {dot}     {dot} "],
+        6: [f" {dot}     {dot} ", f" {dot}     {dot} ", f" {dot}     {dot} "],
+    }
+
+    body = faces[int(value)]
+    return [f"┌─────────┐", f"│{body[0]}│", f"│{body[1]}│", f"│{body[2]}│", f"└─────────┘"]
 
 
-def render(state, show_help, genome=None) -> None:
-    clear()
-    print(pretty_print_state(state))
+def draw_screen(stdscr, state, cursor_pos, mode, reroll_mask):
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
 
-    if show_help and genome is not None and not bool(state.done):
-        suggestion = int(genome_action(genome, state))
-        print("\n\t💡 Suggestion:")
-        print(f"\t   {suggestion}: {action_to_str(suggestion)}")
+    # 1. Header
+    stdscr.addstr(
+        0, 2, f"🎲 KNIFFEL | Round: {int(state.round.squeeze()) + 1}/13 | Rolls Left: {int(state.rolls_left.squeeze())}", curses.A_BOLD
+    )
+    stdscr.addstr(1, 2, "─" * 60)
 
-
-def selection_to_action(selected):
-    action = 0
-    for i, keep in enumerate(selected):
-        if keep:
-            action |= 1 << i
-    return action
-
-
-def choose_action(state):  # noqa: ANN201
-    mask = get_action_mask(state)
-    valid = [i for i, m in enumerate(mask) if m]
-
-    print("\n\tAvailable actions:")
-    for i in valid:
-        print(f"{i:2d}: {action_to_str(i)}")
-
-    while True:
-        raw = input("\n\tAction (number, h=help, q=quit): ").strip()
-
-        if raw == "q":
-            return None
-        if raw == "h":
-            return "toggle_help"
-
-        try:
-            a = int(raw)
-            if a in valid:
-                return a
-        except ValueError:
-            pass
-
-        print("Invalid input.")
-
-
-def render_dice_selection(dice, selected) -> str:
-    parts = []
-    for i, d in enumerate(dice):
-        if selected[i]:
-            parts.append(f" {d} ")  # rerolled
+    # 2. Dice Section
+    dice = state.dice
+    for i in range(5):
+        # Determine status for rendering
+        if reroll_mask[i]:
+            status = "reroll"
+        elif mode == "reroll" and cursor_pos == i:
+            status = "hover"
         else:
-            parts.append(f"[{d}]")  # kept
-    return "\t\t" +" ".join(parts) + "\n"
+            status = "kept"
+
+        face = get_dice_face(dice[i], status)
+        start_x = 2 + (i * 12)
+
+        # Highlight die border if hovering in reroll mode
+        attr = curses.A_REVERSE if (mode == "reroll" and cursor_pos == i) else curses.A_NORMAL
+
+        for row, line in enumerate(face):
+            stdscr.addstr(3 + row, start_x, line, attr)
+
+    # 3. Scorecard Section
+    stdscr.addstr(9, 2, "SCORECARD", curses.A_UNDERLINE)
+    for i, name in enumerate(CAT_NAMES):
+        val = int(state.scorecard[i])
+        score_str = "---" if val < 0 else f"{val:3d}"
+
+        y = 10 + i
+        if mode == "score" and cursor_pos == i:
+            stdscr.addstr(y, 2, f"▶ {name.upper():<16} {score_str:>5}", curses.A_REVERSE)
+        else:
+            attr = curses.A_DIM if val >= 0 else curses.A_NORMAL
+            stdscr.addstr(y, 2, f"  {name:<16} {score_str:>5}", attr)
+
+    # 4. Controls Footer
+    footer_y = 10 + len(CAT_NAMES) + 1
+    controls = "WASD/HJKL: Move | Space: Toggle | Enter: Confirm | Q: Quit"
+    stdscr.addstr(footer_y, 2, "─" * 60)
+    stdscr.addstr(footer_y + 1, 2, controls, curses.A_DIM)
+
+    stdscr.refresh()
 
 
-def choose_reroll(state):
-    dice = list(state.dice)
-    selected = [True] * 5  # False = keep, True = reroll
+def interactive_action(stdscr, state):
+    # Determine if we should start in Reroll or Score mode
+    mode = "reroll" if state.rolls_left > 0 else "score"
+    cursor = 0
+    reroll_mask = [False] * 5
 
     while True:
-        os.system("clear")
-        print(pretty_print_state(state))
+        draw_screen(stdscr, state, cursor, mode, reroll_mask)
 
-        print("\n\tREROLL MODE")
-        print("\tToggle dice with 1-5, ENTER to confirm, q to cancel\n\t x  keep\n\t[x] reroll\n")
+        key = stdscr.getch()
 
-        print(render_dice_selection(dice, selected))
-
-        cmd = input("\t> ").strip()
-
-        if cmd == "":
-            return selection_to_action(selected)
-
-        if cmd == "q":
+        # Quit
+        if key in [ord("q"), ord("Q")]:
             return None
 
-        if cmd in ["1", "2", "3", "4", "5"]:
-            i = int(cmd) - 1
-            selected[i] = not selected[i]
+        # Movement (HJKL / WASD)
+        if key in [ord("h"), ord("a")]:  # Left
+            if mode == "reroll":
+                cursor = max(0, cursor - 1)
+        elif key in [ord("l"), ord("d")]:  # Right
+            if mode == "reroll":
+                cursor = min(4, cursor + 1)
+        elif key in [ord("k"), ord("w")]:  # Up
+            if mode == "score":
+                cursor = (cursor - 1) % 13
+                while state.scorecard[cursor] >= 0:
+                    cursor = (cursor - 1) % 13
+        elif key in [ord("j"), ord("s")]:  # Down
+            if mode == "score":
+                cursor = (cursor + 1) % 13
+                while state.scorecard[cursor] >= 0:
+                    cursor = (cursor + 1) % 13
+
+        # Mode Swapping (Tab or manual switch)
+        elif key == 9:  # Tab
+            mode = "score" if mode == "reroll" else "reroll"
+            cursor = 0
+
+        # Toggle / Select
+        elif key == ord(" "):
+            if mode == "reroll":
+                reroll_mask[cursor] = not reroll_mask[cursor]
+
+        # Confirm (Enter)
+        elif key in [10, 13]:
+            if mode == "reroll":
+                action = 0
+                for i, reroll in enumerate(reroll_mask):
+                    if not reroll:
+                        action |= 1 << i
+                return action
+            else:
+                if state.scorecard[cursor] < 0:
+                    return 32 + cursor
 
 
-def choose_score(state: KniffelState) -> int:
-    print("\n\tSCORE MODE")
+def play_curses(stdscr):
+    # Setup curses colors and cursor
+    curses.curs_set(0)
 
-    for i, name in enumerate(CAT_NAMES):
-        if state.scorecard[i] < 0:
-            print(f"\t{i:2d}: {name}")
-    print()
+    from game import reset, step
+    import jax.random as jr
 
-    while True:
-        cmd = input("\t> ").strip()
-        if cmd.isdigit():
-            i = int(cmd)
-            if 0 <= i < 13 and state.scorecard[i] < 0:
-                return 32 + i
-
-
-def play():
-    key = jr.PRNGKey(0)
+    key = jr.PRNGKey(42)
     state = reset(key)
 
-    genome = WGenome.random(jr.PRNGKey(1))
-    show_help = True
-
     while not bool(state.done):
-        os.system("clear")
-
-        print(pretty_print_state(state))
-
-        if show_help:
-            suggestion = int(genome_action(genome, state))
-            print("\n\t💡 AI Suggestion:")
-            print(f"\t   {action_to_str(suggestion)}")
-
-        print("\n\tCommands: r=reroll, s=score, h=toggle help, q=quit")
-
-        cmd = input("\t> ").strip()
-
-        if cmd == "q":
+        action = interactive_action(stdscr, state)
+        if action is None:
             break
 
-        if cmd == "h":
-            show_help = not show_help
-            continue
-
-        if cmd == "r":
-            action = choose_reroll(state)
-            if action is not None:
-                state, _ = step(state, jnp.int32(action))
-
-        elif cmd == "s":
-            action = choose_score(state)
-            state, _ = step(state, jnp.int32(action))
+        state, _ = step(state, jnp.int32(action))
 
 
 if __name__ == "__main__":
-    play()
+    curses.wrapper(play_curses)
