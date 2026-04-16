@@ -254,6 +254,6 @@ def crossover_w(pa: WGenome, pb: WGenome, key: PRNGKeyArray) -> WGenome:
 
 
 @jaxtyped(typechecker=typechecker)
-def random_w_population(key: PRNGKeyArray, pop_size: int) -> WGenome:
+def random_w_population(key: PRNGKeyArray, pop_size: int, sigma: float = 0.1) -> WGenome:
     keys = jr.split(key, pop_size)
-    return jax.vmap(WGenome.random)(keys)
+    return jax.vmap(WGenome.random, in_axes=(0, None))(keys, sigma)

@@ -20,17 +20,19 @@ EPOCHS = 3_000
 MIGRATE_EVERY = 20
 N_MIGRANTS = 4
 
-SURVIVAL_RATIO = 0.25
-TOURNAMENT_SIZE = 3
+SURVIVAL_RATIO = 0.15
+TOURNAMENT_SIZE = 5
 
-SIGMA_START = 0.3
-SIGMA_END = 0.02
-P_RESET_START = 0.02
-P_RESET_END = 0.001
+SIGMA_START = 0.5
+SIGMA_END = 0.05
+P_RESET_START = 0.5
+P_RESET_END = 0.05
 
 SCHED_FRAC = 0.5
 
-P_CROSSOVER = 0.5
+P_CROSSOVER = 0.15
+
+WC_SIGMA = 3.0
 
 N_ELITES = int(ISLAND_SIZE * SURVIVAL_RATIO)
 N_CHILDREN = ISLAND_SIZE - N_ELITES
@@ -171,7 +173,7 @@ def island_diversities(pop: WGenome) -> Float[Array, " N_ISLANDS"]:
 
 @jaxtyped(typechecker=typechecker)
 def reseed_wildcard(key: PRNGKeyArray) -> tuple[WGenome, Float[Array, f"{ISLAND_SIZE}"]]:
-    return random_w_population(key, ISLAND_SIZE), jnp.zeros(ISLAND_SIZE)
+    return random_w_population(key, ISLAND_SIZE, sigma=WC_SIGMA), jnp.zeros(ISLAND_SIZE)
 
 
 @eqx.filter_jit()

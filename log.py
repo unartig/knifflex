@@ -7,7 +7,8 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import PRNGKeyArray, Scalar, jaxtyped
 
-from game import CAT_NAMES, KniffelState, idx_to_dice, reset, step
+from game import KniffelState, idx_to_dice, reset, step
+from scoring import CAT_NAMES
 from utils import typechecker
 
 if TYPE_CHECKING:
@@ -56,33 +57,17 @@ def pretty_print_state(state: KniffelState) -> str:  # noqa: PLR0915
         5: ["┌────────┐", "│ ●   ●  │", "│   ●    │", "│ ●   ●  │", "└────────┘"],
         6: ["┌────────┐", "│ ●   ●  │", "│ ●   ●  │", "│ ●   ●  │", "└────────┘"],
     }
-    categories = [
-        "Ones",
-        "Twos",
-        "Threes",
-        "Fours",
-        "Fives",
-        "Sixes",
-        "Full House",
-        "3 of a Kind",
-        "4 of a Kind",
-        "Small Straight",
-        "Large Straight",
-        "Chance",
-        "Kniffel",
-    ]
     lines = []
     lines.append("╔═══════════════════════════════════════════════════════════════╗")
     lines.append("║                        🎲 KNIFFEL 🎲                          ║")
     lines.append("╠═══════════════════════════════════════════════════════════════╣")
     status = "FINISHED" if state.done else "IN PROGRESS"
     lines.append(
-        f"║  Round: {int(state.round) + 1:2d}/13        Rolls Left: {int(state.rolls_left)}"
+        f"║  Round: {int(state.round.squeeze()) + 1:2d}/13        Rolls Left: {int(state.rolls_left.squeeze())}"
         f"        Status: {status:11s} ║"
     )
     lines.append("╠═══════════════════════════════════════════════════════════════╣")
     lines.append("║  Current Dice:                                                ║")
-    lines.append("║                                                               ║")
     dice = np.array(state.dice)
     dice_lines = [[] for _ in range(5)]
     for die in dice:
@@ -92,7 +77,6 @@ def pretty_print_state(state: KniffelState) -> str:  # noqa: PLR0915
     for line_parts in dice_lines:
         combined = "  ".join(line_parts)
         lines.append(f"║  {combined}   ║")
-    lines.append("║                                                               ║")
     lines.append("╠═══════════════════════════════════════════════════════════════╣")
     lines.append("║  Scorecard:                                                   ║")
     lines.append("╠═══════════════════════════════════════════════════════════════╣")
@@ -105,7 +89,7 @@ def pretty_print_state(state: KniffelState) -> str:  # noqa: PLR0915
         score_str = "---" if score < 0 else f"{score:3d}"
         if score >= 0:
             upper_total += score
-        lines.append(f"║  │ {categories[i]:15s}                                    {score_str:>4s} │  ║")
+        lines.append(f"║  │ {CAT_NAMES[i]:15s}                                    {score_str:>4s} │  ║")
     lines.append("║  ├─────────────────────────────────────────────────────────┤  ║")
     bonus = 35 if upper_total >= 63 else 0
     lines.append(f"║  │ Upper Subtotal:                                 {upper_total:3d}     │  ║")
@@ -121,7 +105,7 @@ def pretty_print_state(state: KniffelState) -> str:  # noqa: PLR0915
         score_str = "---" if score < 0 else f"{score:3d}"
         if score >= 0:
             lower_total += score
-        lines.append(f"║  │ {categories[i]:15s}                                    {score_str:>4s} │  ║")
+        lines.append(f"║  │ {CAT_NAMES[i]:15s}                                    {score_str:>4s} │  ║")
     lines.append("║  ├─────────────────────────────────────────────────────────┤  ║")
     lines.append(f"║  │ Lower Total:                                        {lower_total:3d} │  ║")
     lines.append("║  └─────────────────────────────────────────────────────────┘  ║")

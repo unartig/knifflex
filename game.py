@@ -33,7 +33,7 @@ def action_to_str(action: int) -> str:
         return f"Reroll {mask}"
     idx = action - 32
     if 0 <= idx < len(CAT_NAMES):
-        return f"Kreuze {CAT_NAMES[idx]}"
+        return f"Score {CAT_NAMES[idx]}"
     return "Invalid Action"
 
 

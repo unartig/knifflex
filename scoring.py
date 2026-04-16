@@ -6,18 +6,18 @@ from dice import DiceArray
 from utils import typechecker
 
 CAT_NAMES = [
-    "Einsen",
-    "Zweien",
-    "Dreien",
-    "Vieren",
-    "Fünfen",
-    "Sechsen",
-    "Full-House",
-    "Dreier-Pasch",
-    "Vierer-Pasch",
-    "Kleine Straße",
-    "Große Straße",
-    "Augenzahl",
+    "Ones",
+    "Twos",
+    "Threes",
+    "Fours",
+    "Fives",
+    "Sixes",
+    "Full House",
+    "3 of a Kind",
+    "4 of a Kind",
+    "Small Straight",
+    "Large Straight",
+    "Chance",
     "Kniffel",
 ]
 

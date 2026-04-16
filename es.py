@@ -163,7 +163,7 @@ def es_step(
 
 
 writer = SummaryWriter(comment="_w_genome")
-#
+
 key = jr.key(SEED)
 key, k_genome = jr.split(key, 2)
 
