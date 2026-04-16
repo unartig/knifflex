@@ -13,10 +13,6 @@ from utils import typechecker
 if TYPE_CHECKING:
     from jaxtyping import Array, Int
 
-# ------------------------------------------------------------------ #
-#  Helpers                                                            #
-# ------------------------------------------------------------------ #
-
 
 @jaxtyped(typechecker=typechecker)
 def get_action_mask(state: KniffelState) -> jnp.ndarray:
@@ -49,11 +45,6 @@ def _totals(scorecard: np.ndarray) -> tuple[int, int, int, int]:
     lower = int(np.sum(np.where(scorecard[6:] >= 0, scorecard[6:], 0)))
     bonus = 35 if upper >= 63 else 0
     return upper, bonus, lower, upper + bonus + lower
-
-
-# ------------------------------------------------------------------ #
-#  Pretty-print  (human path — reconstructs dice for display)        #
-# ------------------------------------------------------------------ #
 
 
 def pretty_print_state(state: KniffelState) -> str:  # noqa: PLR0915
@@ -156,12 +147,7 @@ def _totals(scorecard: np.ndarray) -> tuple[int, int, int, int]:
     return upper, bonus, lower, upper + bonus + lower
 
 
-# ------------------------------------------------------------------ #
-#  Lean mode                                                          #
-# ------------------------------------------------------------------ #
-
-
-def _log_lean(policy_fn: PolicyFn, key) -> None:
+def _log_lean(policy_fn: PolicyFn, key: PRNGKeyArray) -> None:
     """One line per round:
     Round  1 --- R1: 1 1 2 3 5  [X 1 X X 5]  R2: 3 1 4 6 5  [X X 4 X 5]  R3: 2 6 4 1 5  |  Fünfen  15
 
@@ -196,11 +182,6 @@ def _log_lean(policy_fn: PolicyFn, key) -> None:
     print(f"Total: {grand}  (upper: {upper}  bonus: {bonus}  lower: {lower})")
 
 
-# ------------------------------------------------------------------ #
-#  Fancy mode                                                         #
-# ------------------------------------------------------------------ #
-
-
 def _log_pretty(policy_fn: PolicyFn, key: PRNGKeyArray) -> None:
     """Print pretty_print_state after every action."""
     state = reset(key)
@@ -217,14 +198,9 @@ def _log_pretty(policy_fn: PolicyFn, key: PRNGKeyArray) -> None:
             print(f"  ↳ scored {CAT_NAMES[action - 32]}  (reward: {reward})")
 
 
-# ------------------------------------------------------------------ #
-#  Public API                                                         #
-# ------------------------------------------------------------------ #
-
-
 def log_game(
     policy_fn: PolicyFn,
-    key,
+    key: PRNGKeyArray,
     mode: Literal["lean", "fancy"] = "lean",
 ) -> None:
     """Play one game and log it.

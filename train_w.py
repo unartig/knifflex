@@ -23,7 +23,6 @@ N_MIGRANTS = 4
 SURVIVAL_RATIO = 0.25
 TOURNAMENT_SIZE = 3
 
-# Mutation schedule
 SIGMA_START = 0.3
 SIGMA_END = 0.02
 P_RESET_START = 0.02
@@ -234,7 +233,7 @@ for epoch in range(EPOCHS):
     population, fitnesses, stds, final_states = train_step(population, fitnesses, k_step, jnp.int32(epoch))
     wc_pop, wc_fitnesses, _ = wildcard_step(wc_pop, wc_fitnesses, k_wc_step, jnp.int32(epoch))
 
-    # ── Metrics ──────────────────────────────────────────────────── #
+    # Metrics
     avg_fit = float(jnp.mean(fitnesses))
     max_fit = float(jnp.max(fitnesses))
     wc_best = float(jnp.max(wc_fitnesses))

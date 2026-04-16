@@ -17,10 +17,6 @@ from w_genome import (
     genome_action,
 )
 
-# ------------------------------------------------------------------ #
-#  Hyperparameters                                                    #
-# ------------------------------------------------------------------ #
-
 SEED = 123
 
 EPISODES = 512
@@ -168,10 +164,6 @@ def es_step(
 
 writer = SummaryWriter(comment="_w_genome")
 #
-# ------------------------------------------------------------------ #
-#  Init                                                               #
-# ------------------------------------------------------------------ #
-
 key = jr.key(SEED)
 key, k_genome = jr.split(key, 2)
 
@@ -186,17 +178,13 @@ schedule = optax.warmup_cosine_decay_schedule(
 optimizer = optax.adam(schedule)
 opt_state = optimizer.init(eqx.filter(genome, eqx.is_array))
 
-# ------------------------------------------------------------------ #
-#  Loop                                                               #
-# ------------------------------------------------------------------ #
-
 for epoch in range(EPOCHS):
     key, k_step, k_wc_step, k_reseed = jr.split(key, 4)
 
     # Evolution
     genome, opt_state, fitnesses = es_step(genome, opt_state, k_step, epoch)
 
-    # ── Metrics ──────────────────────────────────────────────────── #
+    # Metrics
     avg_fit = float(jnp.mean(fitnesses))
     max_fit = float(jnp.max(fitnesses))
 
