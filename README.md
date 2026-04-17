@@ -140,5 +140,5 @@ Currently looks like the following:
   WASD/HJKL: Move | SPACE: Toggle | ENTER: Confirm
   TAB: Switch Mode | G: Toggle AI | Q: Quit
 ```
-The interpretability 
+I hope I will find the time to improve the Genome interpretability and Suggestions in the near futu in the near future!
 
