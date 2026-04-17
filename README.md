@@ -8,7 +8,7 @@ Say no more, **Knifflex** is here to help!
 
 All it takes is a perfect understanding of transition probabilities and some slight reweighting of expected returns ;^)  
 
-**Knifflex** is basically a bot, that is trained gradient free, using either **[evolutionary strategies (ES)](https://arxiv.org/pdf/1703.03864)** or a **[genetic island model*](https://link.springer.com/chapter/10.1007/BFb0027170)*.
+**Knifflex** is basically a bot, that is trained gradient free, using either **[evolutionary strategies (ES)](https://arxiv.org/pdf/1703.03864)** or a **[genetic island model](https://link.springer.com/chapter/10.1007/BFb0027170)**.
 Built with [JAX](https://github.com/google/jax) and [Equinox](https://github.com/patrick-kidger/equinox), fully JIT-compiled.
 
 And the nicest part is, **Kniffel** is directly interpretable and will teach you how to become better at Kniffel.
