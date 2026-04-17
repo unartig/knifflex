@@ -7,9 +7,10 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import PRNGKeyArray, Scalar, jaxtyped
 
-from game import KniffelState, idx_to_dice, reset, step
-from scoring import CAT_NAMES
-from utils import typechecker
+from knifflex.game.game import KniffelState, idx_to_dice, reset, step
+from knifflex.game.scoring import CAT_NAMES
+
+from .utils import typechecker
 
 if TYPE_CHECKING:
     from jaxtyping import Array, Int

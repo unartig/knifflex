@@ -6,7 +6,7 @@ from typing import TypeAlias
 import jax.numpy as jnp
 from jaxtyping import Array, Bool, Int, Scalar, UInt, jaxtyped
 
-from utils import typechecker
+from knifflex.utils.utils import typechecker
 
 DiceArray: TypeAlias = UInt[Array, "5"]
 

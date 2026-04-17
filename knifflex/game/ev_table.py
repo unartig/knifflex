@@ -8,8 +8,8 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm import trange
 
-from dice import ALL_ROLLS, KEEP_MASKS, N_ROLLS
-from scoring import score_case
+from .dice import ALL_ROLLS, KEEP_MASKS, N_ROLLS
+from .scoring import score_case
 
 _ROLLS_NP = np.array(ALL_ROLLS)  # (252, 5)
 _MASKS_NP = np.array(KEEP_MASKS)  # (32, 5)
@@ -40,8 +40,9 @@ _SCORE_TABLE = np.array(_score_vmapped(_cats_jnp, ALL_ROLLS), dtype=np.int32)  #
 
 
 def get_transition_tensor() -> np.ndarray:
-    if Path("transition_tensor.npz").exists():
-        T = np.load("transition_tensor.npz")["transition_tensor"]
+    path_str = "data/transition_tensor.npz"
+    if Path(path_str).exists():
+        T = np.load(path_str)["transition_tensor"]
         return T
 
     print("Building transition tensor (252 dice x 32 reroll masks x 252 dice)")
@@ -69,7 +70,7 @@ def get_transition_tensor() -> np.ndarray:
     assert np.allclose(row_sums, 1.0, atol=1e-5), f"Row sum error: min={row_sums.min():.6f} max={row_sums.max():.6f}"
 
     np.savez_compressed(
-        "transition_tensor.npz",
+        path_str,
         transition_tensor=T,
     )
     return T
@@ -86,9 +87,9 @@ def get_transition_tensor() -> np.ndarray:
 
 
 def get_ev_table() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-
-    if Path("ev_table.npz").exists():
-        _data = np.load("ev_table.npz")
+    path_str = "ev­_table.npz"
+    if Path(path_str).exists():
+        _data = np.load(path_str)
 
         ev = _data["ev_table"]  # (252, 3, 13)  float32
         best_mask = _data["best_mask"]  # (252, 2, 13)  int32
@@ -130,7 +131,7 @@ def get_ev_table() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     assert ev[lstr, 0, 10] == 40.0, "Large straight score should be 40"
 
     np.savez_compressed(
-        "ev_table.npz",
+        path_str,
         ev_table=ev,
         best_mask=best_mask,
     )
@@ -158,8 +159,6 @@ def get_ev_table() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def _load_transition() -> tuple:
-    from ev_table import get_transition_tensor  # noqa: PLC0415
-
     T = jnp.array(get_transition_tensor(), dtype=jnp.float32)  # (252, 32, 252)
     fresh = T[0, 0]  # (252,) - reroll-all distribution
     return T, fresh

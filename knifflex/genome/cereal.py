@@ -3,7 +3,7 @@ from pathlib import Path
 import jax.numpy as jnp
 import numpy as np
 
-from w_genome import DECOMP_RANK, GENOME_TYPE, DecompWGenome, FullWGenome, WGenome
+from .w_genome import DECOMP_RANK, GENOME_TYPE, DecompWGenome, FullWGenome, WGenome
 
 
 def save_genome(genome: DecompWGenome | FullWGenome, path: str | Path) -> None:

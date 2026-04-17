@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -6,11 +8,12 @@ import jax.tree_util as jtu
 from jaxtyping import Array, Float, Int, PRNGKeyArray, Scalar, Shaped, jaxtyped
 from tensorboardX import SummaryWriter
 
-from cereal import save_genome
-from game import KniffelState, reset, step
-from log import log_game
-from utils import typechecker
-from w_genome import WGenome, crossover_w, genome_action, mutate_w, population_get, random_w_population
+from knifflex.game.game import KniffelState, reset, step
+from knifflex.utils.log import log_game
+from knifflex.utils.utils import typechecker
+
+from .cereal import save_genome
+from .w_genome import WGenome, crossover_w, genome_action, mutate_w, population_get, random_w_population
 
 SEED = 123
 N_ISLANDS = 4
@@ -36,8 +39,6 @@ WC_SIGMA = 3.0
 
 N_ELITES = int(ISLAND_SIZE * SURVIVAL_RATIO)
 N_CHILDREN = ISLAND_SIZE - N_ELITES
-
-writer = SummaryWriter(comment="_w_genome")
 
 
 @jaxtyped(typechecker=typechecker)
@@ -216,6 +217,9 @@ def migrate(
     fitnesses = fitnesses.at[jnp.arange(N_ISLANDS)[:, None], wc_idx].set(wc_f_bc)
     return pop, fitnesses
 
+
+date_str = datetime.now().isoformat().split(".")[0].replace("-", "_").replace(":", "_")
+writer = SummaryWriter(f"data/runs/{date_str}", comment="_w_genome")
 
 key = jr.key(SEED)
 key, k_pop, k_wc = jr.split(key, 3)

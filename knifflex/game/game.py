@@ -6,10 +6,11 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Bool, Int, Int8, PRNGKeyArray, Scalar, UInt, jaxtyped
 
-from dice import N_ROLLS, DiceArray, idx_to_dice
-from ev_table import FRESH_PROBS, TRANSITION_TABLE
-from scoring import CAT_NAMES, N_CATS, score_case
-from utils import typechecker
+from knifflex.utils.utils import typechecker
+
+from .dice import N_ROLLS, DiceArray, idx_to_dice
+from .ev_table import FRESH_PROBS, TRANSITION_TABLE
+from .scoring import CAT_NAMES, N_CATS, score_case
 
 """
 Optimal: 245,870775 of max. 375
@@ -29,7 +30,7 @@ def mask_to_reroll_idx(keep_mask: Bool[Array, "5"]) -> Int[Array, ""]:
 def action_to_str(action: int) -> str:
     action = int(action)
     if action < 32:
-        mask = [(action >> i) & 1 for i in range(5)]
+        mask = [1 - ((action >> i) & 1) for i in range(5)]
         return f"Reroll {mask}"
     idx = action - 32
     if 0 <= idx < len(CAT_NAMES):

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -6,11 +8,12 @@ import optax
 from jaxtyping import Array, Float, Int, PRNGKeyArray, Scalar, Shaped, jaxtyped
 from tensorboardX import SummaryWriter
 
-from cereal import save_genome
-from game import KniffelState, reset, step
-from log import log_game
-from utils import typechecker
-from w_genome import (
+from knifflex.game.game import KniffelState, reset, step
+from knifflex.utils.log import log_game
+from knifflex.utils.utils import typechecker
+
+from .cereal import save_genome
+from .w_genome import (
     DecompWGenome,
     FullWGenome,
     WGenome,
@@ -162,7 +165,8 @@ def es_step(
     return new_genome, new_opt_state, fitnesses
 
 
-writer = SummaryWriter(comment="_w_genome")
+date_str = datetime.now().isoformat().split(".")[0].replace("-", "_").replace(":", "_")
+writer = SummaryWriter(f"data/runs/{date_str}", comment="_w_genome")
 
 key = jr.key(SEED)
 key, k_genome = jr.split(key, 2)

@@ -8,13 +8,13 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, Int, PRNGKeyArray, Scalar, Shaped, jaxtyped
 
-from ev_table import get_ev_table
-from game import TRANSITION_TABLE
-from scoring import CAT_MAX, N_CATS
-from utils import typechecker
+from knifflex.game.ev_table import get_ev_table
+from knifflex.game.game import TRANSITION_TABLE
+from knifflex.game.scoring import CAT_MAX, N_CATS
+from knifflex.utils.utils import typechecker
 
 if TYPE_CHECKING:
-    from game import KniffelState
+    from knifflex.game.game import KniffelState
 
 EV_TABLE, _MASK_TABLE, _ROLLS = (jnp.asarray(arr) for arr in get_ev_table())
 MASK_TABLE = _MASK_TABLE.astype(jnp.uint8)

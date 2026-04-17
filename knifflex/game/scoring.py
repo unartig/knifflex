@@ -2,8 +2,9 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Int, Int8, Scalar, jaxtyped
 
-from dice import DiceArray
-from utils import typechecker
+from knifflex.utils.utils import typechecker
+
+from .dice import DiceArray
 
 CAT_NAMES = [
     "Ones",
