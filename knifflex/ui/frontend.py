@@ -1,4 +1,4 @@
-import curses
+import os
 
 import jax
 import jax.numpy as jnp
@@ -8,6 +8,17 @@ from knifflex.game.ev_table import get_ev_table
 from knifflex.game.game import TRANSITION_TABLE, action_to_str, reset, step
 from knifflex.game.scoring import CAT_NAMES
 from knifflex.genome.w_genome import build_context, genome_action
+
+try:
+    import curses
+except ImportError:
+    if os.name == "nt":
+        print(
+            "It seems you're saying Hello from Windows, for the frontend to work properly install:\npip install windows-curses"
+        )
+    else:
+        print("The frontend needs curses to work. Your system does currently not support it.")
+
 
 # Load static tables
 EV_TABLE, _, _ = (jnp.asarray(arr) for arr in get_ev_table())
