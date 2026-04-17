@@ -11,7 +11,7 @@ All it takes is a perfect understanding of transition probabilities and some sli
 **Knifflex** is basically a bot, that is trained gradient free, using either **[evolutionary strategies (ES)](https://arxiv.org/pdf/1703.03864)** or a **[genetic island model](https://link.springer.com/chapter/10.1007/BFb0027170)**.
 Built with [JAX](https://github.com/google/jax) and [Equinox](https://github.com/patrick-kidger/equinox), fully JIT-compiled.
 
-And the nicest part is, **Kniffel** is directly interpretable and will teach you how to become better at Kniffel.
+And the nicest part is, the **Knifflex** bot is directly interpretable and will teach you how to become better at Kniffel.
 
 
 This project took me ~4 years, with numerous highs and lows and wildly different methodologies I have tried and failed with, until I came up with the current implementation!
