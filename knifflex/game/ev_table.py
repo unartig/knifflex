@@ -87,7 +87,7 @@ def get_transition_tensor() -> np.ndarray:
 
 
 def get_ev_table() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    path_str = "ev­_table.npz"
+    path_str = "data/ev­_table.npz"
     if Path(path_str).exists():
         _data = np.load(path_str)
 
