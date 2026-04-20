@@ -123,25 +123,25 @@ Currently looks like the following:
   ~~~~~~~~~~~ ~~~~~~~~~~~ └─────────┘ └─────────┘ └─────────┘
   roll        roll        keep        keep        keep
                               ─────────────────── ─────────────────── ───────────────────
-  SCORECARD                   SCORE NOW    raw    REROLL →1    raw    REROLL →2    raw      
+  SCORECARD                   SCORE NOW    raw    REROLL →1    raw    REROLL →2    raw
     Ones              ---         31.0     1.0        27.7     0.3        31.5     1.1
-    Twos              ---         15.2     0.0        18.2     0.7        25.3     2.2      
-    Threes            ---         18.3     3.0        10.1     1.0        19.7     3.3      
+    Twos              ---         15.2     0.0        18.2     0.7        25.3     2.2
+    Threes            ---         18.3     3.0        10.1     1.0        19.7     3.3
     Fours             ---     ▶   43.6    12.0    ▶   49.3    13.3    ▶   54.0    14.4
     Fives             ---        -19.1     0.0       -12.0     1.7         4.5     5.6
-    Sixes             ---        -30.5     0.0       -22.2     2.0        -2.7     6.7                       
+    Sixes             ---        -30.5     0.0       -22.2     2.0        -2.7     6.7
     Full House        ---         14.8     0.0        20.6     3.5        26.7     7.0
     3 of a Kind       ---         32.9    16.0        38.4    19.0        41.1    20.5
     4 of a Kind       ---         25.5     0.0        33.5     5.9        39.3    10.3
     Small Straight    ---          3.6     0.0         3.6     0.0        16.5     9.2
-    Large Straight    ---         12.9     0.0        12.9     0.0        16.6     2.4      
-    Chance            ---         22.1    16.0        27.4    19.0        30.1    20.5      
-    Kniffel           ---         27.2     0.0        30.7     1.4        39.0     4.7                                    
-                                                                                                                          
-  WASD/HJKL: Move | SPACE: Toggle | ENTER: Confirm                                     
-  TAB: Switch Mode | G: Toggle AI | I: Genome Inspector | Q: Quit                      
+    Large Straight    ---         12.9     0.0        12.9     0.0        16.6     2.4
+    Chance            ---         22.1    16.0        27.4    19.0        30.1    20.5
+    Kniffel           ---         27.2     0.0        30.7     1.4        39.0     4.7
 
-                                                  MASK              BEST EV       EV   
+  WASD/HJKL: Move | SPACE: Toggle | ENTER: Confirm
+  TAB: Switch Mode | G: Toggle AI | I: Genome Inspector | Q: Quit
+
+                                                  MASK              BEST EV       EV
   DECISION LOGIC                                  1 roll, 0 keep
   Score now:        43.59                         [1, 1, 1, 1, 1] | Ones       |  33.63
   E[reroll→best]:   57.19                         [0, 1, 1, 1, 1] | Ones       |  37.10
@@ -171,7 +171,7 @@ Currently looks like the following:
                                                   [0, 1, 1, 0, 0] | Fours      |  39.80
                                                   [1, 0, 1, 0, 0] | Fours      |  39.80
                                                   [0, 0, 1, 0, 0] | Fours      |  37.43
-                            current selection --> [1, 1, 0, 0, 0] | Fours      |  54.02  <-- AI suggestion                                                                                                                       
+                            current selection --> [1, 1, 0, 0, 0] | Fours      |  54.02  <-- AI suggestion
                                                   [0, 1, 0, 0, 0] | Fours      |  51.65
                                                   [1, 0, 0, 0, 0] | Fours      |  51.65
                                                   [0, 0, 0, 0, 0] | Fours      |  49.28
