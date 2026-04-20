@@ -117,28 +117,69 @@ Currently looks like the following:
   🎲 KNIFFEL | Round: 1/13 | Rolls: 2
 
   ~~~~~~~~~~~ ~~~~~~~~~~~ ┌─────────┐ ┌─────────┐ ┌─────────┐
-  ~         ~ ~ X     X ~ │ ●     ● │ │ ●     ● │ │ ●     ● │
-  ~    X    ~ ~         ~ │         │ │ ●     ● │ │ ●     ● │
-  ~         ~ ~ X     X ~ │ ●     ● │ │ ●     ● │ │ ●     ● │
+  ~         ~ ~ X       ~ │ ●     ● │ │ ●     ● │ │ ●     ● │
+  ~    X    ~ ~    X    ~ │         │ │         │ │         │
+  ~         ~ ~       X ~ │ ●     ● │ │ ●     ● │ │ ●     ● │
   ~~~~~~~~~~~ ~~~~~~~~~~~ └─────────┘ └─────────┘ └─────────┘
+  roll        roll        keep        keep        keep
+                              ─────────────────── ─────────────────── ───────────────────
+  SCORECARD                   SCORE NOW    raw    REROLL →1    raw    REROLL →2    raw      DECISION LOGIC                
+    Ones              ---         31.0     1.0        27.7     0.3        31.5     1.1                                    
+    Twos              ---         15.2     0.0        18.2     0.7        25.3     2.2      Score now:        43.59       
+    Threes            ---         18.3     3.0        10.1     1.0        19.7     3.3      E[reroll→best]:   57.19       
+    Fours             ---     ▶   43.6    12.0    ▶   49.3    13.3    ▶   54.0    14.4                                    
+    Fives             ---        -19.1     0.0       -12.0     1.7         4.5     5.6                                    
+    Sixes             ---        -30.5     0.0       -22.2     2.0        -2.7     6.7      SHOULD REROLL                 
+    Full House        ---         14.8     0.0        20.6     3.5        26.7     7.0                                    
+    3 of a Kind       ---         32.9    16.0        38.4    19.0        41.1    20.5                                    
+    4 of a Kind       ---         25.5     0.0        33.5     5.9        39.3    10.3                                    
+    Small Straight    ---          3.6     0.0         3.6     0.0        16.5     9.2                                    
+    Large Straight    ---         12.9     0.0        12.9     0.0        16.6     2.4      Mode: Bonus Hunt              
+    Chance            ---         22.1    16.0        27.4    19.0        30.1    20.5      Bias: Round                   
+    Kniffel           ---         27.2     0.0        30.7     1.4        39.0     4.7                                    
+                                                                                                                          
+  WASD/HJKL: Move | SPACE: Toggle | ENTER: Confirm                                                                        
+  TAB: Switch Mode | G: Toggle AI | I: Genome Inspector | Q: Quit                                                         
 
-  SCORECARD                    RAW EV │ ADJ. EV     DECISION LOGIC
-    Ones              ---         1.1 │  5094.6
-    Twos              ---         2.2 │  4032.5     Current Val: 5681.29
-    Threes            ---         3.3 │  3066.3     Reroll  Val: 7677.78
-    Fours             ---         7.8 │  4490.0
-    Fives             ---         5.6 │   486.8     Given the current reroll selection:
-    Sixes             ---        16.7 │  7677.8     » SHOULD REROLL
-    Full House        ---         6.7 │  4174.7
-    3 of a Kind       ---        15.9 │  5395.3     💡 AI SUGGESTS: Reroll [1, 1, 1, 0, 0]
-    4 of a Kind       ---         4.6 │  5079.1     1 reroll - 0 keep
-    Small Straight    ---        10.1 │  2966.7
-    Large Straight    ---         2.8 │  2324.1     Mode: Bonus Hunt
-    Chance            ---        24.5 │  6948.8
-    Kniffel           ---         0.8 │  4760.0     Bias: BonusDist
-
-  WASD/HJKL: Move | SPACE: Toggle | ENTER: Confirm
-  TAB: Switch Mode | G: Toggle AI | Q: Quit
+                                                  MASK              BEST EV       EV                                                   
+                                                  1 roll, 0 keep
+                                                  [1, 1, 1, 1, 1] | Ones       |  33.63
+                                                  [0, 1, 1, 1, 1] | Ones       |  37.10
+                                                  [1, 0, 1, 1, 1] | Threes     |  33.47
+                                                  [0, 0, 1, 1, 1] | Ones       |  36.40
+                                                  [1, 1, 0, 1, 1] | Ones       |  32.93
+                                                  [0, 1, 0, 1, 1] | Ones       |  36.40
+                                                  [1, 0, 0, 1, 1] | Ones       |  32.24
+                                                  [0, 0, 0, 1, 1] | Ones       |  35.71
+                                                  [1, 1, 1, 0, 1] | Ones       |  32.93
+                                                  [0, 1, 1, 0, 1] | Ones       |  36.40
+                                                  [1, 0, 1, 0, 1] | Ones       |  32.24
+                                                  [0, 0, 1, 0, 1] | Ones       |  35.71
+                                                  [1, 1, 0, 0, 1] | Fours      |  42.17
+                                                  [0, 1, 0, 0, 1] | Fours      |  39.80
+                                                  [1, 0, 0, 0, 1] | Fours      |  39.80
+                                                  [0, 0, 0, 0, 1] | Fours      |  37.43
+                                                  [1, 1, 1, 1, 0] | Ones       |  32.93
+                                                  [0, 1, 1, 1, 0] | Ones       |  36.40
+                                                  [1, 0, 1, 1, 0] | Ones       |  32.24
+                                                  [0, 0, 1, 1, 0] | Ones       |  35.71
+                                                  [1, 1, 0, 1, 0] | Fours      |  42.17
+                                                  [0, 1, 0, 1, 0] | Fours      |  39.80
+                                                  [1, 0, 0, 1, 0] | Fours      |  39.80
+                                                  [0, 0, 0, 1, 0] | Fours      |  37.43
+                                                  [1, 1, 1, 0, 0] | Fours      |  42.17
+                                                  [0, 1, 1, 0, 0] | Fours      |  39.80                                                                                                                         
+                                                  [1, 0, 1, 0, 0] | Fours      |  39.80                                                                                                                         
+                                                  [0, 0, 1, 0, 0] | Fours      |  37.43                                                                                                                         
+                            current selection --> [1, 1, 0, 0, 0] | Fours      |  54.02  <-- AI suggestion                                                                                                                       
+                                                  [0, 1, 0, 0, 0] | Fours      |  51.65                                                                                                                         
+                                                  [1, 0, 0, 0, 0] | Fours      |  51.65                                                                                                                         
+                                                  [0, 0, 0, 0, 0] | Fours      |  49.28                                                                                                                         
+                                                  [0, 0, 0, 0, 0] | Fours      |  49.28                                                                                                                         
+                                                  [0, 0, 0, 0, 0] | Fours      |  49.28                                                                                                                         
 ```
+The AI suggestion shows the reroll that maximizes expected value after accounting for all possible outcomes and future decisions.
+EVs are calculated and highlighted on the fly for both the player selection and the AI decions.
+
 I hope I will find the time to improve the Genome interpretability and Suggestions in the (near) future!
 
