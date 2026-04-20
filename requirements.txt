@@ -1,9 +1,9 @@
 beartype==0.22.9
-equinox==0.13.4
+equinox==0.13.7
 jax[cuda13]==0.9.0.1
 kaleido==1.2.0
 matplotlib==3.10.8
-optax==0.2.7
+optax==0.2.8
 pillow==12.1.1
 setuptools==81.0.0
 tensorboard==2.20.0
