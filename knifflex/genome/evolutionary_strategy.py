@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import datetime
 
 import equinox as eqx
@@ -14,23 +15,20 @@ from knifflex.utils.utils import typechecker
 
 from .cereal import save_genome
 from .w_genome import (
-    DecompWGenome,
-    FullWGenome,
+    GENOME_TYPE,
     WGenome,
-    genome_action,
 )
 
 SEED = 123
 
-EPISODES = 512
+EPISODES = 1024
+ES_POP = 1024
 EPOCHS = 3_000
 
-ES_POP = 512
+ES_SIGMA_UP = 1.0
 
-ES_SIGMA_UP = 3.0
-
-ES_SIGMA_A = 2.0
-ES_SIGMA_B = 2.0
+ES_SIGMA_A = 0.3
+ES_SIGMA_B = 0.3
 ES_SIGMA_A_SCALE = 0.5
 ES_SIGMA_B_SCALE = 0.5
 
@@ -42,11 +40,28 @@ ES_LR_MIN = 1e-2
 WARMUP_STEPS = 5
 SCHED_FRAC = 0.5
 
+if GENOME_TYPE == "full":
+    SIGMAS: dict[str, float] = {
+        "raw_w": ES_SIGMA_W,
+        "raw_w_scale": ES_SIGMA_W_SCALE,
+        "raw_bonus_uplift": ES_SIGMA_UP,
+    }
+elif GENOME_TYPE == "decomp":
+    SIGMAS: dict[str, float] = {
+        "raw_a": ES_SIGMA_A,
+        "raw_b": ES_SIGMA_B,
+        "raw_a_scale": ES_SIGMA_A_SCALE,
+        "raw_b_scale": ES_SIGMA_B_SCALE,
+        "raw_bonus_uplift": ES_SIGMA_UP,
+    }
+else:
+    raise ValueError(f"Unknown GENOME_TYPE: {GENOME_TYPE!r}  (expected 'full' or 'decomp')")
+
 
 @jaxtyped(typechecker=typechecker)
 def policy(population: WGenome, states: KniffelState) -> Int[Array, f"{ES_POP} {EPISODES}"]:
     return jax.vmap(
-        lambda w, s_batch: jax.vmap(lambda s: genome_action(w, s))(s_batch),
+        lambda w, s_batch: jax.vmap(w.oracle_action)(s_batch),
         in_axes=(0, 0),
     )(population, states)
 
@@ -55,7 +70,7 @@ def policy(population: WGenome, states: KniffelState) -> Int[Array, f"{ES_POP} {
 def run_batch(
     population: WGenome, keys: Shaped[PRNGKeyArray, f"{ES_POP} {EPISODES}"]
 ) -> tuple[Int[Array, f"{ES_POP} {EPISODES}"], KniffelState]:
-    pop_size = population.W.shape[0]
+    pop_size = population.w.shape[0]
     states = jax.vmap(jax.vmap(reset))(keys)
     rewards = jnp.zeros((pop_size, EPISODES), dtype=jnp.int32)
 
@@ -75,94 +90,34 @@ def run_batch(
 @jaxtyped(typechecker=typechecker)
 def es_step(
     genome: WGenome, opt_state: optax.OptState, key: PRNGKeyArray, epoch: Int[Scalar, ""]
-) -> tuple[FullWGenome | DecompWGenome, optax.OptState, Float[Array, ""]]:
-    progress = jnp.clip(1.0 - epoch.astype(jnp.float32) / EPOCHS, 0.0, 1.0)
-
+) -> tuple[WGenome, optax.OptState, Float[Array, ""]]:
     half = ES_POP // 2
+    key, k_noise, k_ep = jr.split(key, 3)
 
-    # Generate antithetic noise for all components
-    @jaxtyped(typechecker=typechecker)
-    def make_noise(k: PRNGKeyArray, shape: tuple[int, ...]) -> Float[Array, f"{ES_POP} *"]:
-        n = jr.normal(k, (half, *shape))
-        return jnp.concatenate([n, -n], axis=0)
+    noises = genome.es_make_noises(k_noise, half)
 
-    @jaxtyped(typechecker=typechecker)
-    def get_grad(
-        f_norm: Float[Array, f"{ES_POP}"], noise: Float[Array, f"{ES_POP} *"], sigma: float
-    ) -> Float[Array, "*"]:
-        expand = (slice(None),) + (None,) * (noise.ndim - 1)
-        return jnp.mean(f_norm[expand] * noise, axis=0) / sigma
+    # perturb: pop[i] = genome + sigma * noise[i]
+    pop = jax.vmap(lambda n: genome.es_perturb(n, SIGMAS))(noises)
 
-    key, k_ep = jr.split(key)
-    ep_keys = jax.vmap(lambda j: jr.fold_in(k_ep, j))(jnp.arange(EPISODES))
-    ep_keys_bc = jnp.tile(ep_keys[None], (ES_POP, 1))
+    ep_keys = jnp.tile(jax.vmap(lambda j: jr.fold_in(k_ep, j))(jnp.arange(EPISODES))[None], (ES_POP, 1))
+    rewards, _ = run_batch(pop, ep_keys)
+    fitnesses = jnp.mean(rewards, axis=1)
+    f_norm = (fitnesses - fitnesses.mean()) / (fitnesses.std() + 1e-8)
 
-    if isinstance(genome, DecompWGenome):
-        k_a, k_b, k_as, k_bs, k_up = jr.split(key, 5)
+    # Grad: mean(f_norm * noise) / sigma, field-wise — zip leaves directly
+    genome_arrays, _static = eqx.partition(genome, eqx.is_array)
+    _genome_leaves, treedef = jax.tree.flatten(genome_arrays)  # treedef from genome, not noises
+    noise_leaves, _ = jax.tree.flatten(eqx.filter(noises, eqx.is_array))
+    field_names = [f.name for f in dataclasses.fields(genome)]
 
-        noise_a = make_noise(k_a, genome.A.shape)
-        noise_b = make_noise(k_b, genome.B.shape)
-        noise_as = make_noise(k_as, genome.A_scale.shape)
-        noise_bs = make_noise(k_bs, genome.B_scale.shape)
-        noise_up = make_noise(k_up, genome.bonus_uplift.shape)
+    grad_leaves = [
+        jnp.mean(f_norm[(..., *([None] * (n.ndim - 1)))] * n, axis=0) / SIGMAS[name]
+        for n, name in zip(noise_leaves, field_names, strict=True)
+    ]
 
-        # Create population with perturbed weights AND scales
-        pop = jax.vmap(
-            lambda na, nb, nas, nbs, nup: DecompWGenome(
-                A=genome.A + ES_SIGMA_A * na,
-                B=genome.B + ES_SIGMA_B * nb,
-                A_scale=genome.A_scale + ES_SIGMA_A_SCALE * nas,
-                B_scale=genome.B_scale + ES_SIGMA_B_SCALE * nbs,
-                bonus_uplift=genome.bonus_uplift + ES_SIGMA_UP * nup,
-            )
-        )(noise_a, noise_b, noise_as, noise_bs, noise_up)
-
-        # Run episodes
-        rewards, _ = run_batch(pop, ep_keys_bc)
-        fitnesses = jnp.mean(rewards, axis=1)
-
-        f_norm = (fitnesses - fitnesses.mean()) / (fitnesses.std() + 1e-8)
-
-        grads = DecompWGenome(
-            A=get_grad(f_norm, noise_a, ES_SIGMA_A),
-            B=get_grad(f_norm, noise_b, ES_SIGMA_B),
-            A_scale=get_grad(f_norm, noise_as, ES_SIGMA_A_SCALE),
-            B_scale=get_grad(f_norm, noise_bs, ES_SIGMA_B_SCALE),
-            bonus_uplift=get_grad(f_norm, noise_up, ES_SIGMA_UP),
-        )
-
-    elif isinstance(genome, FullWGenome):
-        k_w, k_ws, k_up = jr.split(key, 3)
-
-        noise_w = make_noise(k_w, genome.W.shape)
-        noise_ws = make_noise(k_ws, genome.W_scale.shape)
-        noise_up = make_noise(k_up, genome.bonus_uplift.shape)
-
-        pop = jax.vmap(
-            lambda nw, nws, nup: FullWGenome(
-                _W=genome.W + ES_SIGMA_W * nw,
-                _W_scale=genome.W_scale + ES_SIGMA_W_SCALE * nws,
-                bonus_uplift=genome.bonus_uplift + ES_SIGMA_UP * nup,
-            )
-        )(noise_w, noise_ws, noise_up)
-
-        rewards, _ = run_batch(pop, ep_keys_bc)
-        fitnesses = jnp.mean(rewards, axis=1)
-        f_norm = (fitnesses - fitnesses.mean()) / (fitnesses.std() + 1e-8)
-
-        grads = FullWGenome(
-            _W=get_grad(f_norm, noise_w, ES_SIGMA_W),
-            _W_scale=get_grad(f_norm, noise_ws, ES_SIGMA_W_SCALE),
-            bonus_uplift=get_grad(f_norm, noise_up, ES_SIGMA_UP),
-        )
-
-    grads_arrays = eqx.filter(grads, eqx.is_array)
-    neg_grads = jax.tree.map(lambda g: -g, grads_arrays)
-
+    neg_grads = jax.tree.unflatten(treedef, [-g for g in grad_leaves])
     updates, new_opt_state = optimizer.update(neg_grads, opt_state)
-    new_genome = eqx.apply_updates(genome, updates)
-
-    return new_genome, new_opt_state, fitnesses
+    return eqx.apply_updates(genome, updates), new_opt_state, fitnesses
 
 
 date_str = datetime.now().isoformat().split(".")[0].replace("-", "_").replace(":", "_")
@@ -192,24 +147,39 @@ for epoch in range(EPOCHS):
     avg_fit = float(jnp.mean(fitnesses))
     max_fit = float(jnp.max(fitnesses))
 
+    raw_w = genome.raw_a @ genome.raw_b  # or genome.raw_w for FullWGenome
+    raw_ws = genome.raw_a_scale @ genome.raw_b_scale
+
     writer.add_scalar("Fitness/Best", max_fit, epoch)
     writer.add_scalar("Fitness/Average", avg_fit, epoch)
     current_lr = float(jnp.float32(schedule(epoch)))
     writer.add_scalar("Train/LR", current_lr, epoch)
     writer.add_scalar("Genome/uplift", genome.bonus_uplift, epoch)
 
+    writer.add_scalar("Weights/w_saturation", float(jnp.mean(jnp.abs(jnp.tanh(raw_w)) > 0.95)), epoch)
+    writer.add_scalar("Weights/w_scale_saturation", float(jnp.mean(jnp.abs(jnp.tanh(raw_ws)) > 0.95)), epoch)
+    writer.add_scalar("Weights/w_raw_absmax", float(jnp.max(jnp.abs(raw_w))), epoch)
+    writer.add_scalar("Weights/w_raw_absmean", float(jnp.mean(jnp.abs(raw_w))), epoch)
+    writer.add_scalar("Weights/w_out_absmax", float(jnp.max(jnp.abs(genome.w))), epoch)
+    writer.add_scalar("Weights/w_scale_out_max", float(jnp.max(genome.w_scale)), epoch)
+    writer.add_scalar("Weights/w_scale_out_min", float(jnp.min(genome.w_scale)), epoch)
+    writer.add_scalar("Weights/raw_w_rms", float(jnp.sqrt(jnp.mean((genome.raw_a @ genome.raw_b) ** 2))), epoch)
+    writer.add_scalar(
+        "Weights/raw_ws_rms", float(jnp.sqrt(jnp.mean((genome.raw_a_scale @ genome.raw_b_scale) ** 2))), epoch
+    )
+
     if epoch % 10 == 0:
         key, log_key = jr.split(key)
         print(f"[{epoch:4d}] avg={avg_fit:.1f}  best={max_fit:.1f} w/ {genome.bonus_uplift:.4f}")
 
-        W_norm = (genome.W - genome.W.min()) / (genome.W.max() - genome.W.min() + 1e-8)
+        W_norm = (genome.w - genome.w.min()) / (genome.w.max() - genome.w.min() + 1e-8)
         writer.add_image("Genome/Best_W", W_norm[None], epoch)
-        W_scale_norm = (genome.W_scale - genome.W_scale.min()) / (genome.W_scale.max() - genome.W_scale.min() + 1e-8)
+        W_scale_norm = (genome.w_scale - genome.w_scale.min()) / (genome.w_scale.max() - genome.w_scale.min() + 1e-8)
         writer.add_image("Genome/Best_W_scale", W_scale_norm[None], epoch)
 
     if epoch % 100 == 0:
         save_genome(genome, path=writer.logdir + f"/best_w{epoch}")
-        log_game(lambda s: genome_action(genome, s), log_key)
+        log_game(genome.oracle_action, log_key)
 
 
 writer.close()

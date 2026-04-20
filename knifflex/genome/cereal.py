@@ -13,22 +13,22 @@ def save_genome(genome: DecompWGenome | FullWGenome, path: str | Path) -> None:
 
     if isinstance(genome, FullWGenome):
         arrays = {
-            "W": np.asarray(genome._W),
-            "W_scale": np.asarray(genome._W_scale),
+            "W": np.asarray(genome.raw_w),
+            "W_scale": np.asarray(genome.raw_w_scale),
             "bonus_uplift": np.asarray(genome.bonus_uplift),
         }
         gtype = "full"
         rank = 0  # unused for full, stored for completeness
     elif isinstance(genome, DecompWGenome):
         arrays = {
-            "A": np.asarray(genome.A),
-            "B": np.asarray(genome.B),
-            "A_scale": np.asarray(genome.A_scale),
-            "B_scale": np.asarray(genome.B_scale),
+            "A": np.asarray(genome.raw_a),
+            "B": np.asarray(genome.raw_b),
+            "A_scale": np.asarray(genome.raw_a_scale),
+            "B_scale": np.asarray(genome.raw_b_scale),
             "bonus_uplift": np.asarray(genome.bonus_uplift),
         }
         gtype = "decomp"
-        rank = genome.A.shape[1]
+        rank = genome.raw_a.shape[1]
     else:
         raise TypeError(f"Unknown genome type: {type(genome)}")
 
@@ -58,9 +58,9 @@ def load_genome(path: str | Path) -> WGenome:
 
     if gtype == "full":
         return FullWGenome(
-            _W=jnp.asarray(data["W"]),
-            _W_scale=jnp.asarray(data["W_scale"]),
-            bonus_uplift=jnp.asarray(data["bonus_uplift"]),
+            raw_w=jnp.asarray(data["W"]),
+            raw_w_scale=jnp.asarray(data["W_scale"]),
+            raw_bonus_uplift=jnp.asarray(data["bonus_uplift"]),
         )
 
     if gtype == "decomp":
@@ -71,11 +71,11 @@ def load_genome(path: str | Path) -> WGenome:
                 "w_genome.py before loading."
             )
         return DecompWGenome(
-            A=jnp.asarray(data["A"]),
-            B=jnp.asarray(data["B"]),
-            A_scale=jnp.asarray(data["A_scale"]),
-            B_scale=jnp.asarray(data["B_scale"]),
-            bonus_uplift=jnp.asarray(data["bonus_uplift"]),
+            raw_a=jnp.asarray(data["A"]),
+            raw_b=jnp.asarray(data["B"]),
+            raw_a_scale=jnp.asarray(data["A_scale"]),
+            raw_b_scale=jnp.asarray(data["B_scale"]),
+            raw_bonus_uplift=jnp.asarray(data["bonus_uplift"]),
         )
 
     raise ValueError(f"Unrecognised genome_type in file: {gtype!r}")

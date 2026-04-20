@@ -13,7 +13,7 @@ from knifflex.utils.log import log_game
 from knifflex.utils.utils import typechecker
 
 from .cereal import save_genome
-from .w_genome import WGenome, crossover_w, genome_action, mutate_w, population_get, random_w_population
+from .w_genome import WGenome, population_get, random_w_population
 
 SEED = 123
 N_ISLANDS = 4
@@ -44,7 +44,7 @@ N_CHILDREN = ISLAND_SIZE - N_ELITES
 @jaxtyped(typechecker=typechecker)
 def policy(population: WGenome, states: KniffelState) -> Int[Array, f"{ISLAND_SIZE} {EPISODES}"]:
     return jax.vmap(
-        lambda w, s_batch: jax.vmap(lambda s: genome_action(w, s))(s_batch),
+        lambda w, s_batch: jax.vmap(w.oracle_action)(s_batch),
         in_axes=(0, 0),
     )(population, states)
 
@@ -53,7 +53,7 @@ def policy(population: WGenome, states: KniffelState) -> Int[Array, f"{ISLAND_SI
 def run_batch(
     population: WGenome, keys: Shaped[PRNGKeyArray, f"{ISLAND_SIZE} {EPISODES}"]
 ) -> tuple[Int[Array, f"{ISLAND_SIZE} {EPISODES}"], KniffelState]:
-    pop_size = population.W.shape[0]
+    pop_size = population.w.shape[0]
     states = jax.vmap(jax.vmap(reset))(keys)
     rewards = jnp.zeros((pop_size, EPISODES), dtype=jnp.int32)
 
@@ -74,7 +74,7 @@ def run_batch(
 def _evaluate_one_island(
     pop: WGenome, key: PRNGKeyArray
 ) -> tuple[Float[Array, f"{ISLAND_SIZE}"], Float[Array, f"{ISLAND_SIZE}"], KniffelState]:
-    pop_size = pop.W.shape[0]
+    pop_size = pop.w.shape[0]
     ep_keys = jax.vmap(lambda j: jr.fold_in(key, j))(jnp.arange(EPISODES))
     ep_keys_bc = jnp.broadcast_to(ep_keys[None], (pop_size, EPISODES))
     rewards, states = run_batch(pop, ep_keys_bc)
@@ -106,7 +106,7 @@ def _evolve_one_island(
     pb = jtu.tree_map(lambda x: x[idx_b], elites)
 
     # 3. Conditional Crossover
-    crossed_children = jax.vmap(crossover_w)(pa, pb, jr.split(k_cross_op, N_CHILDREN))
+    crossed_children = jax.vmap(pa.crossover)(pb, jr.split(k_cross_op, N_CHILDREN))
 
     do_cross_mask = jr.bernoulli(k_cross_mask, P_CROSSOVER, (N_CHILDREN,))
 
@@ -123,7 +123,7 @@ def _evolve_one_island(
     sigma = SIGMA_END + (SIGMA_START - SIGMA_END) * progress
     p_reset = P_RESET_END + (P_RESET_START - P_RESET_END) * progress
 
-    children = jax.vmap(mutate_w, in_axes=(0, 0, None, None))(children, jr.split(k_mut, N_CHILDREN), sigma, p_reset)
+    children = jax.vmap(children.mutate, in_axes=(0, None, None))(jr.split(k_mut, N_CHILDREN), sigma, p_reset)
 
     return jtu.tree_map(
         lambda e, c: jnp.concatenate([e, c], axis=0),
@@ -161,7 +161,7 @@ def train_step(
 @jaxtyped(typechecker=typechecker)
 def population_diversity(pop: WGenome) -> Float[Array, ""]:
     """Mean std of W entries across individuals — high means spread out."""
-    flat = pop.W.reshape(pop.W.shape[0], -1)  # (pop, 182)
+    flat = pop.w.reshape(pop.w.shape[0], -1)  # (pop, 182)
     return jnp.mean(jnp.std(flat, axis=0))
 
 
@@ -263,16 +263,16 @@ for epoch in range(EPOCHS):
         key, log_key = jr.split(key)
         print(f"[{epoch:4d}] avg={avg_fit:.1f}  best={max_fit:.1f}  wc={wc_best:.1f}  div={global_div:.4f}")
 
-        W_norm = (best_genome.W - best_genome.W.min()) / (best_genome.W.max() - best_genome.W.min() + 1e-8)
+        W_norm = (best_genome.w - best_genome.w.min()) / (best_genome.w.max() - best_genome.w.min() + 1e-8)
         writer.add_image("Genome/Best_W", W_norm[None], epoch)
-        W_scale_norm = (best_genome.W_scale - best_genome.W_scale.min()) / (
-            best_genome.W_scale.max() - best_genome.W_scale.min() + 1e-8
+        W_scale_norm = (best_genome.w_scale - best_genome.w_scale.min()) / (
+            best_genome.w_scale.max() - best_genome.w_scale.min() + 1e-8
         )
         writer.add_image("Genome/Best_W_scale", W_scale_norm[None], epoch)
 
     if epoch % 100 == 0:
         save_genome(best_genome, path=writer.logdir + f"/best_w{epoch}")
-        log_game(lambda s: genome_action(best_genome, s), log_key)
+        log_game(best_genome.oracle_action, log_key)
 
 
 writer.close()
