@@ -39,7 +39,7 @@ A scalar `bonus_uplift` is additionally learned: it adds a bonus to upper-sectio
 
 **At inference**, the genome's `oracle_action` function:
 1. Builds a 17-dim context vector from the current state (scores, upper sum, bonus distance,rolls left and round, everything normalized to [0, 1]).
-2. Computes per-category weights and scales via `adjusted_ev = (raw_ev + bonus_uplift) * softplus(W_scale @ ctx) + (W @ ctx)`.
+2. Computes per-category weights and scales via `adjusted_ev = (raw_ev + bonus_uplift) * (W_scale @ ctx) + (W @ ctx)`.
   - Uses a precomputed **EV table** (expected value of each dice configuration for each scoring category at each roll depth) to evaluate all 252 possible dice configurations.
 3. For rerolls: multiplies the **transition table** (probability of reaching each dice config from the current one given a keep mask) against future utilities to find the best keep mask.
 4. Returns either a scoring action or the best reroll mask.
@@ -181,7 +181,7 @@ Currently looks like the following:
 The AI suggestion shows the reroll that maximizes expected value after accounting for all possible outcomes and future decisions.
 EVs are calculated and highlighted on the fly for both the player selection and the AI decions.
 
-Pressing `I` will toggle the internals of the Genome.
+Pressing `I` will toggle the internals-view of the Genome.
 
 I hope I will find the time to improve the Genome interpretability and Suggestions in the (near) future!
 
