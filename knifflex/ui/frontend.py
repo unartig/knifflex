@@ -31,7 +31,7 @@ EV_TABLE, _, _ = (jnp.asarray(arr) for arr in get_ev_table())
 #   5 = weak negative    (normal)
 #   6 = near-zero        (dim)
 #   7 = weak positive    (cyan)
-#   8 = strong positive  (cyan, bold)
+#   8 = strong positive  (yellow, bold)
 # ---------------------------------------------------------------------------
 INSP_PAIRS = {
     "neg_strong": 4,
@@ -60,6 +60,23 @@ CTX_NAMES = [
     "rolls_left",
     "rounds_left",
 ]
+
+# Scorecard layout constants
+N_UPPER = 6  # Ones … Sixes
+N_LOWER = 7  # Full House … Kniffel
+BONUS_THRESHOLD = 63
+
+# Rows in the scorecard widget (including separators and summary lines):
+#   header
+#   6 upper cats
+#   upper-total separator + row
+#   bonus separator + row
+#   lower separator label
+#   7 lower cats
+#   lower-total separator + row
+#   grand-total separator + row
+# = 1 + 6 + 2 + 2 + 1 + 7 + 2 + 2 = 23 rows
+SCORE_WIDGET_HEIGHT = 23
 
 
 def _val_to_pair(v: float, vmax: float) -> int:
@@ -144,16 +161,6 @@ class DecisionData:
 # ---------------------------------------------------------------------------
 # Computation helpers
 # ---------------------------------------------------------------------------
-
-
-def _adj_ev(raw_ev, ai_ctx: AIContext):
-    """Apply bonus uplift + genome scale/weight to a raw EV array."""
-    uplift = jnp.where(
-        (raw_ev >= ai_ctx.bonus_rem) & (jnp.arange(13) < 6) & (~ai_ctx.bonus_earned),
-        0.0,  # bonus_uplift applied later per genome; keep signature consistent
-        0.0,
-    )
-    return (raw_ev + uplift) * ai_ctx.cat_scales + ai_ctx.cat_weights, raw_ev
 
 
 def _compute_adj_ev_with_uplift(genome, raw_ev, ai_ctx: AIContext):
@@ -242,40 +249,44 @@ def compute_decision_data(genome, state, ai_ctx: AIContext) -> DecisionData:
 # ---------------------------------------------------------------------------
 
 COL_W = 20  # width of each EV column
-COL_W_HALF = 9  # width of raw sub-column within each column
-
+CAT_NAME_W = 10  # width of the category name prefix column
 
 def draw_ev_columns(stdscr, columns: list[ColumnData], open_mask, y_off: int, x_start: int):
     """
-    Render the three EV columns.  Each column shows:
+    Render category names followed by three EV columns.  Each column shows:
       adj_ev  (bright, primary)   raw_ev  (dimmed, secondary)
     """
-    # Layout within each COL_W=20 column:
-    #   x+0  : marker (2 chars: "▶ " or "  ")
-    #   x+2  : adj value (6 chars: right-aligned float)
-    #   x+8  : separator gap (2 chars)
-    #   x+10 : raw value (6 chars: right-aligned float)
-    #   x+16 : trailing gap (4 chars)
-    ADJ_X = 2  # offset of adj field within column
-    RAW_X = 10  # offset of raw field within column
+    # Layout per row:
+    #   x_start                        : category name (CAT_NAME_W chars)
+    #   x_start + CAT_NAME_W + c*COL_W :
+    #     +0  : marker ("▶ " or "  ")
+    #     +2  : adj value (6 chars)
+    #     +10 : raw value (6 chars)
+    ADJ_X = 2
+    RAW_X = 10
+    x_cols = x_start + CAT_NAME_W
 
+    # Header rows
+    stdscr.addstr(y_off - 2, x_start, "─" * CAT_NAME_W, curses.A_DIM)
+    stdscr.addstr(y_off - 1, x_start, " " * CAT_NAME_W, curses.A_DIM)
     for c, col in enumerate(columns):
-        x = x_start + c * COL_W
+        x = x_cols + c * COL_W
         attr = curses.A_NORMAL if col.available else curses.A_DIM
         stdscr.addstr(y_off - 2, x, "─" * (COL_W - 1), attr)
-        # Label left, sub-headers right-aligned to match data fields
         stdscr.addstr(y_off - 1, x, f"{col.label:<{ADJ_X + 6}}", attr | curses.A_UNDERLINE)
         stdscr.addstr(y_off - 1, x + RAW_X, f"{'raw':>6}  ", curses.A_DIM)
 
-    # Per-category rows — aligned with scorecard at y_off + i
     for i in range(13):
         y = y_off + i
+        name = CAT_NAMES[i][: CAT_NAME_W - 1]
         if not open_mask[i]:
-            stdscr.addstr(y, x_start, "  [LOCKED]" + " " * (COL_W * 3 - 10), curses.A_DIM)
+            stdscr.addstr(y, x_start, f"{name:<{CAT_NAME_W}}", curses.A_DIM)
+            stdscr.addstr(y, x_cols, "[LOCKED]" + " " * (COL_W * 3 - 8), curses.A_DIM)
             continue
 
+        stdscr.addstr(y, x_start, f"{name:<{CAT_NAME_W}}", curses.A_DIM)
         for c, col in enumerate(columns):
-            x = x_start + c * COL_W
+            x = x_cols + c * COL_W
             adj_val = float(col.adj_ev[i])
             raw_val = float(col.raw_ev[i])
             is_best = i == col.best_idx
@@ -283,19 +294,21 @@ def draw_ev_columns(stdscr, columns: list[ColumnData], open_mask, y_off: int, x_
             if not col.available:
                 stdscr.addstr(y, x, f"  {adj_val:>6.1f}  {'':>6}  ", curses.A_DIM)
             elif is_best:
-                stdscr.addstr(y, x, f"▶ {adj_val:>6.1f}  ", curses.color_pair(2) | curses.A_BOLD)
+                stdscr.addstr(y, x, f"> {adj_val:>6.1f}  ", curses.color_pair(2) | curses.A_BOLD)
                 stdscr.addstr(y, x + RAW_X, f"{raw_val:>6.1f}  ", curses.A_DIM)
             else:
                 stdscr.addstr(y, x, f"  {adj_val:>6.1f}  ", curses.A_NORMAL)
                 stdscr.addstr(y, x + RAW_X, f"{raw_val:>6.1f}  ", curses.A_DIM)
 
+    # Legend below the EV table
+    legend_y = y_off + 13
+    stdscr.addstr(legend_y, x_start, "> best  ", curses.color_pair(2) | curses.A_BOLD)
+    stdscr.addstr(legend_y, x_start + 8, "adj = weighted EV   raw = expected score", curses.A_DIM)
+
 
 def draw_decision_panel(stdscr, decision: DecisionData, y_off: int, x: int):
     """Render the right-hand decision logic panel."""
     stdscr.addstr(y_off - 1, x, "DECISION LOGIC", curses.A_UNDERLINE)
-
-    # Decode AI mask into keep/reroll per-die
-    mask_bits = [("K" if decision.ai_mask_idx & (1 << i) else "R") for i in range(5)]
 
     stdscr.addstr(y_off + 1, x, f"Score now:      {decision.val_now:>7.2f}", curses.A_DIM)
     stdscr.addstr(y_off + 2, x, f"E[reroll→best]: {decision.val_reroll:>7.2f}", curses.A_DIM)
@@ -321,13 +334,12 @@ def _safe_addstr(stdscr, y, x, text, attr=curses.A_NORMAL):
 
 def draw_inspector_w(stdscr, genome, view: str, row_cursor: int):
     """
-    Full-screen inspector.  view in {'w', 'ctx', 'row'}.
+    Full-screen inspector.  view in {'w', 'wscale', 'ctx', 'row'}.
     row_cursor selects the highlighted category in 'row' view.
     """
     max_y, max_x = stdscr.getmaxyx()
     stdscr.erase()
 
-    # Header
     views = [("W", "w"), ("W_scale", "wscale"), ("ctx", "ctx"), ("row profile", "row")]
     header = "  GENOME INSPECTOR   "
     for label, key in views:
@@ -350,14 +362,12 @@ def draw_inspector_w(stdscr, genome, view: str, row_cursor: int):
 
 def _draw_insp_matrix(stdscr, genome, which: str, row_cursor: int, max_y: int, max_x: int):
     """Render the W or W_scale matrix as a colour heatmap."""
-
     mat = np.array(genome.w if which == "w" else genome.w_scale)  # (13, 17)
     vmax = float(np.max(np.abs(mat))) if which == "w" else float(np.max(mat))
 
-    CELL_W = 7  # chars per cell  e.g. " -12.3 "
-    ROW_LABEL_W = 14  # chars for category label
+    CELL_W = 7
+    ROW_LABEL_W = 14
 
-    # Column headers
     y = 2
     _safe_addstr(stdscr, y, 0, f"{'':>{ROW_LABEL_W}}", curses.A_DIM)
     for ci, cname in enumerate(CTX_NAMES):
@@ -380,12 +390,10 @@ def _draw_insp_matrix(stdscr, genome, which: str, row_cursor: int, max_y: int, m
                 attr = _val_to_attr(v, vmax)
                 cell = f"{v:+.1f}".center(CELL_W)
             else:
-                # w_scale: always positive, 1.0 = neutral
                 attr = _val_to_attr(v - 1.0, max(vmax - 1.0, 1e-9))
                 cell = f"{v:.3f}".center(CELL_W)
             _safe_addstr(stdscr, y, x, cell, attr)
 
-    # Legend
     legend_y = max_y - 2
     _safe_addstr(stdscr, legend_y, 0, "  ◀ neg_strong   neg_weak   ~zero   pos_weak   pos_strong ▶", curses.A_DIM)
     for i, (label, pair) in enumerate(
@@ -418,10 +426,9 @@ def _draw_insp_ctx(stdscr, genome, max_y: int, max_x: int):
             break
         _safe_addstr(stdscr, y, 2, f"{dim:<4} {name:<14} {rng:<14} {meaning}", curses.A_NORMAL)
 
-    # Also show which context features B_raw loads most heavily
     y = 4 + len(rows) * 2 + 1
     _safe_addstr(stdscr, y, 0, "B vector  (context feature directions, rank-1 decomp):", curses.A_UNDERLINE)
-    b = np.array(genome.raw_b).squeeze()  # (CTX_DIM,)
+    b = np.array(genome.raw_b).squeeze()
     vmax = float(np.max(np.abs(b))) + 1e-9
     BAR_W = 30
     for ci, (name, val) in enumerate(zip(CTX_NAMES, b)):
@@ -439,10 +446,9 @@ def _draw_insp_ctx(stdscr, genome, max_y: int, max_x: int):
 def _draw_insp_row(stdscr, genome, row_cursor: int, max_y: int, max_x: int):
     """Show the weight profile for the selected category."""
     cat_name = CAT_NAMES[row_cursor]
-    w_row = np.array(genome.w)[row_cursor]  # (17,)
-    ws_row = np.array(genome.w_scale)[row_cursor]  # (17,)
+    w_row = np.array(genome.w)[row_cursor]
+    ws_row = np.array(genome.w_scale)[row_cursor]
     vmax_w = float(np.max(np.abs(w_row))) + 1e-9
-    vmax_ws = float(np.max(ws_row - 1.0)) + 1e-9
 
     _safe_addstr(stdscr, 2, 0, f"Category: {cat_name}   (hjkl to change)", curses.A_BOLD)
     _safe_addstr(stdscr, 3, 0, f"  {'CTX DIM':<14} {'W (weight)':>12}  {'bar':^32}  {'W_scale':>8}", curses.A_UNDERLINE)
@@ -464,7 +470,6 @@ def _draw_insp_row(stdscr, genome, row_cursor: int, max_y: int, max_x: int):
 
 def draw_all_masks(stdscr, genome, state, y, x, selected_idx, best_idx):
     ai_ctx = AIContext(genome, state)
-
     rl = ai_ctx.rl
 
     if rl == 0:
@@ -478,7 +483,9 @@ def draw_all_masks(stdscr, genome, state, y, x, selected_idx, best_idx):
     )
     all_adj = (all_raw + uplift) * ai_ctx.cat_scales + ai_ctx.cat_weights
 
-    expected_per_cat = TRANSITION_TABLE[state.dice_idx] @ all_adj
+    # Bug fix: mask out already-filled categories so best_cat_idx only considers open slots
+    all_adj_open = jnp.where(ai_ctx.open_mask, all_adj, -1e9)
+    expected_per_cat = TRANSITION_TABLE[state.dice_idx] @ all_adj_open
 
     best_cat_idx = jnp.argmax(expected_per_cat, axis=1)  # (32,)
     best_cat_val = jnp.max(expected_per_cat, axis=1)  # (32,)
@@ -503,10 +510,98 @@ def draw_all_masks(stdscr, genome, state, y, x, selected_idx, best_idx):
         else:
             attr = curses.A_NORMAL
 
-        stdscr.addstr(row, x, f"{mask} | {cat:<10} | {ev:6.2f}", attr)
+        stdscr.addstr(row, x, f"{mask} | {cat:<15} | {ev:6.2f}", attr)
 
 
 INSPECTOR_VIEWS = ["w", "wscale", "ctx", "row"]
+
+
+# ---------------------------------------------------------------------------
+# Scorecard rendering
+# ---------------------------------------------------------------------------
+
+_SC_W = 26  # inner width of scorecard box (excluding border chars)
+
+
+def _sc_row(name: str, value: int | None, selected: bool, dim: bool) -> tuple[str, int]:
+    """Format one scorecard category row. Returns (text, attr)."""
+    val_str = "---" if value is None else str(value)
+    text = f" {name:<16}    {val_str:>4} "
+    if selected:
+        return (">" + text[1:], curses.A_REVERSE)
+    return (text, curses.A_DIM if dim else curses.A_NORMAL)
+
+
+def _sc_sep(label: str = "") -> str:
+    """A horizontal separator row, optionally labelled."""
+    if label:
+        pad = _SC_W - len(label) - 2
+        return f"├─ {label} {'─' * (pad - 1)}┤"
+    return f"├{'─' * _SC_W}┤"
+
+
+def draw_scorecard(stdscr, state, mode: str, cursor: int, y_start: int, x: int):
+    """
+    Draw a bordered scorecard with upper/lower subtotals, bonus indicator,
+    and grand total.
+    """
+    sc = state.scorecard  # shape (13,)
+
+    # Derived totals
+    upper_vals = [int(sc[i]) if sc[i] >= 0 else None for i in range(N_UPPER)]
+    lower_vals = [int(sc[i]) if sc[i] >= 0 else None for i in range(N_UPPER, 13)]
+
+    upper_sum = sum(v for v in upper_vals if v is not None)
+    lower_sum = sum(v for v in lower_vals if v is not None)
+    bonus = 35 if upper_sum >= BONUS_THRESHOLD else 0
+    total = upper_sum + bonus + lower_sum
+
+    bonus_progress = f"{min(upper_sum, BONUS_THRESHOLD)}/{BONUS_THRESHOLD}"
+    bonus_str = f"+35 ✓" if bonus else f"({bonus_progress})"
+
+    y = y_start
+
+    def put(text, attr=curses.A_NORMAL):
+        nonlocal y
+        with contextlib.suppress(curses.error):
+            stdscr.addstr(y, x, text, attr)
+        y += 1
+
+    # Top border + header
+    put(f"┌{'─' * _SC_W}┐")
+    put(f"│{'SCORECARD':^{_SC_W}}│", curses.A_BOLD)
+    put(f"├{'─' * _SC_W}┤")
+
+    # Upper section
+    for i in range(N_UPPER):
+        selected = mode == "score" and cursor == i
+        dim = upper_vals[i] is not None and not selected
+        text, attr = _sc_row(CAT_NAMES[i], upper_vals[i], selected, dim)
+        put(f"│{text}│", attr)
+
+    # Upper subtotal + bonus
+    put(_sc_sep("UPPER"))
+    put(f"│ {'Subtotal':<16}    {upper_sum:>4} │", curses.A_DIM)
+    bonus_attr = curses.color_pair(2) | curses.A_BOLD if bonus else curses.A_DIM
+    put(f"│ {'Bonus':<16}  {bonus_str:>4} │", bonus_attr)
+
+    # Lower section
+    put(_sc_sep("LOWER"))
+    for i in range(N_LOWER):
+        cat_idx = N_UPPER + i
+        selected = mode == "score" and cursor == cat_idx
+        dim = lower_vals[i] is not None and not selected
+        text, attr = _sc_row(CAT_NAMES[cat_idx], lower_vals[i], selected, dim)
+        put(f"│{text}│", attr)
+
+    # Lower subtotal + grand total
+    put(_sc_sep())
+    put(f"│ {'Lower total':<16}    {lower_sum:>4} │", curses.A_DIM)
+    put(_sc_sep())
+    put(f"│ {'TOTAL':<16}    {total:>4} │", curses.A_BOLD)
+    put(f"└{'─' * _SC_W}┘")
+
+    return y  # return the row after the last drawn line
 
 
 class KniffelApp:
@@ -518,8 +613,8 @@ class KniffelApp:
         self.reroll_mask = [False] * 5
         # Inspector state
         self.inspector = False
-        self.insp_view = "w"  # current sub-view
-        self.insp_row = 0  # selected category row
+        self.insp_view = "w"
+        self.insp_row = 0
 
     def get_dice_face(self, value, status):
         dot = "●" if status == "kept" else ("○" if status == "hover" else "X")
@@ -546,18 +641,18 @@ class KniffelApp:
                 mask_idx |= 1 << i
         return mask_idx
 
-    def draw_ai_panels(self, stdscr, state, y_off):
+    def draw_ai_panels(self, stdscr, state, y_off: int):
         ai_ctx = AIContext(self.genome, state)
         mask_idx = self.calculate_mask_idx()
         columns = compute_column_data(self.genome, state, ai_ctx, mask_idx)
         decision = compute_decision_data(self.genome, state, ai_ctx)
 
-        x_cols = 30
+        x_cols = 40
         x_logic = x_cols + 3 * COL_W + 2
 
         draw_ev_columns(stdscr, columns, ai_ctx.open_mask, y_off, x_cols)
         draw_decision_panel(stdscr, decision, y_off, x_logic)
-        draw_all_masks(stdscr, self.genome, state, 8, x_logic + 30, mask_idx, decision.ai_mask_idx)
+        draw_all_masks(stdscr, self.genome, state, y_off - 2, x_logic + 30, mask_idx, decision.ai_mask_idx)
 
     def render(self, stdscr, state):
         stdscr.erase()
@@ -568,6 +663,7 @@ class KniffelApp:
             curses.A_BOLD,
         )
 
+        # Dice row (rows 2-6)
         for i, val in enumerate(state.dice):
             is_hover = self.mode == "reroll" and self.cursor == i
             is_reroll = self.reroll_mask[i]
@@ -586,25 +682,23 @@ class KniffelApp:
             for row, line in enumerate(face):
                 stdscr.addstr(2 + row, 2 + (i * 12), line, attr)
 
-        stdscr.addstr(8, 2, "SCORECARD", curses.A_UNDERLINE)
-        for i, name in enumerate(CAT_NAMES):
-            val = int(state.scorecard[i])
-            y = 9 + i
-            if self.mode == "score" and self.cursor == i:
-                stdscr.addstr(y, 2, f"▶ {name.upper():<16} {('---' if val < 0 else val):>4}", curses.A_REVERSE)
-            else:
-                stdscr.addstr(
-                    y,
-                    2,
-                    f"  {name:<16} {('---' if val < 0 else val):>4}",
-                    curses.A_DIM if val >= 0 else curses.A_NORMAL,
-                )
+        # Scorecard with border — starts at row 8, returns the row after the closing border
+        _scorecard_end = draw_scorecard(stdscr, state, self.mode, self.cursor, y_start=8, x=2)
 
+        # AI panels sit directly below the scorecard
         if self.show_ai:
-            self.draw_ai_panels(stdscr, state, 9)
+            ai_y = 11  # one blank line gap
+            self.draw_ai_panels(stdscr, state, ai_y)
 
-        stdscr.addstr(23, 2, "WASD/HJKL: Move | SPACE: Toggle | ENTER: Confirm", curses.A_DIM)
-        stdscr.addstr(24, 2, "TAB: Switch Mode | G: Toggle AI | I: Genome Inspector | Q: Quit", curses.A_DIM)
+        # Help bar at the very bottom
+        help_y = curses.LINES - 2
+        stdscr.addstr(help_y, 2, "WASD/HJKL: Move | SPACE: Toggle | ENTER: Confirm", curses.A_DIM)
+        stdscr.addstr(
+            help_y + 1,
+            2,
+            "TAB: Switch Mode (Dice/Scorecard)| G: Toggle AI | I: Genome Inspector | Q: Quit",
+            curses.A_DIM,
+        )
         stdscr.refresh()
 
     def play(self, stdscr, state):
